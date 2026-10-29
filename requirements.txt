@@ -4,3 +4,4 @@ pandas
 gymnasium
 neuprint-python
 yfinance
+python-dotenv
