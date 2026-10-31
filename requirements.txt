@@ -5,3 +5,4 @@ gymnasium
 neuprint-python
 yfinance
 python-dotenv
+pyarrow
