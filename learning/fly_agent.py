@@ -32,9 +32,15 @@ class FlyAgent:
         w_kc_mbon: float = 0.03,  # mean initial KC->MBON weight (tuned on hemibrain: ~25 Hz MBON rate)
         tau_plastic: float = 5.0,  # ms decay of the KC->MBON synaptic current
         seed: int = 0,
+        warm_ms: int = 0,         # settling steps before counting spikes (use with reset_state)
+        input_scale: float = 0.01,  # obs divisor: 0.01 for daily returns, ~0.5 for ranks in [-1, 1]
+        has_position: bool = True,  # True: last obs element is the current position (not scaled)
     ):
         rng = np.random.default_rng(seed)
         self.sim_ms = sim_ms
+        self.warm_ms = warm_ms
+        self.input_scale = input_scale
+        self.has_position = has_position
         self.n_obs = n_obs
         self.kc_drive = kc_drive
         self.tau_plastic = tau_plastic
@@ -96,10 +102,22 @@ class FlyAgent:
         self.last_rates = np.zeros(len(self.mbon))
         self.group_base = None  # running mean firing rate of each readout group
 
+    def reset_state(self):
+        """Clear neuron state only (keeps learned weights and baselines).
+
+        Used between independent samples, e.g. different stocks on the same day, so one
+        stock's spikes cannot leak into the next stock's response.
+        """
+        self.net.reset()
+        self.i_plastic = np.zeros(len(self.mbon))
+
     # ---- input encoding ----
     def encode(self, obs: np.ndarray) -> np.ndarray:
         x = np.asarray(obs, dtype=np.float64).copy()
-        x[:-1] = np.clip(x[:-1] / 0.01, -5, 5)  # daily log returns ~ 1% -> unit scale
+        if self.has_position:
+            x[:-1] = np.clip(x[:-1] / self.input_scale, -5, 5)  # returns ~ 1% -> unit scale
+        else:
+            x = np.clip(x / self.input_scale, -5, 5)
         drive = self.proj @ x
         winners = np.argpartition(drive, -self.n_winners)[-self.n_winners:]
         i_kc = np.zeros(len(self.kc))
@@ -115,16 +133,19 @@ class FlyAgent:
         kc_counts = np.zeros(len(self.kc))
         mbon_counts = np.zeros(len(self.mbon))
         decay = np.exp(-1.0 / self.tau_plastic)
-        for _ in range(self.sim_ms):
+        for t in range(self.warm_ms + self.sim_ms):
             kc_spk = self.net.spikes[self.kc].astype(np.float64)
             self.i_plastic = self.i_plastic * decay + self.syn.W @ kc_spk
             i_ext[self.mbon] = self.i_plastic
             spikes = self.net.step(i_ext)
-            kc_counts += spikes[self.kc]
-            mbon_counts += spikes[self.mbon]
+            if t >= self.warm_ms:  # warm-up steps let the circuit settle and are not counted
+                kc_counts += spikes[self.kc]
+                mbon_counts += spikes[self.mbon]
         self.last_pre, self.last_post = kc_counts, mbon_counts
         self.last_rates = mbon_counts / (self.sim_ms / 1000.0)
         rates = np.array([self.last_rates[g].mean() for g in self.groups])
+        # Continuous buy-minus-sell readout: used to RANK stocks in the multi-stock experiments.
+        self.last_score = float(rates[2] - rates[0])
         # Compare each group to its own running baseline, so the action reflects how the
         # input changed the circuit, not which group happens to be wired stronger.
         if self.group_base is None:
@@ -138,6 +159,12 @@ class FlyAgent:
         return action
 
     # ---- dopamine-gated learning ----
+    def learn_sample(self, pre_counts: np.ndarray, action: int, reward: float) -> float:
+        """Learn from a stored sample (used when several stocks are processed per day)."""
+        self.last_pre = pre_counts
+        self.last_action = action
+        return self.learn(reward)
+
     def learn(self, reward: float) -> float:
         """Three-factor update after the env has paid out `reward` for the last action.
 
