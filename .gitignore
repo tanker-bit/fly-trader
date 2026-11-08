@@ -7,3 +7,9 @@ data/
 .env
 .ipynb_checkpoints/
 results/
+league_data/
+.env
+league_data/
+league_data_fundamentals/
+data_fundamentals/
+__pycache__/
