@@ -120,12 +120,16 @@ def parse_wikipedia(html: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     head = [t.lower() for _, t in cons[0]]
     col = lambda name: next(i for i, h in enumerate(head) if h.startswith(name))
     ic, isec, ida, icik = col("symbol"), col("security"), col("date added"), col("cik")
+    igs = next((i for i, h in enumerate(head) if h == "gics sector"), None)
+    isub = next((i for i, h in enumerate(head) if h == "gics sub-industry"), None)
     cur = []
     for r in cons[1:]:
         if len(r) > max(ic, isec, ida, icik):
             cik = re.sub(r"\D", "", r[icik][1])
-            cur.append((_sym(r[ic][1]), r[isec][1], pd.to_datetime(r[ida][1], errors="coerce"), int(cik) if cik else np.nan))
-    return pd.DataFrame(cur, columns=["symbol", "security", "date_added", "cik"]), parse_changes(html)
+            cur.append((_sym(r[ic][1]), r[isec][1], pd.to_datetime(r[ida][1], errors="coerce"), int(cik) if cik else np.nan,
+                        r[igs][1] if igs is not None and len(r) > igs else "", r[isub][1] if isub is not None and len(r) > isub else ""))
+    return (pd.DataFrame(cur, columns=["symbol", "security", "date_added", "cik", "sector", "sub_industry"]),
+            parse_changes(html))
 
 
 def build_intervals(current: pd.DataFrame, changes: pd.DataFrame) -> tuple[pd.DataFrame, int]:
