@@ -4,6 +4,24 @@
 
 > **Status: research only. No tradable edge has been demonstrated.** The honest result so far is that the fly performs about the same as a random sparse code and a ridge regression (roughly +0.01 rank IC), and nothing survives multiple-testing correction. This is not financial advice and nothing here trades real money.
 
+## The idea
+
+The fly mushroom body is a reward-learning circuit:
+
+- **Kenyon cells (KCs):** a sparse code of the sensory input
+- **Dopaminergic neurons (DANs):** signal reward and punishment
+- **Mushroom body output neurons (MBONs):** drive behaviour (here: sell / hold / buy)
+
+The connectome fixes the wiring. Only the KC -> MBON synapses learn, via a three-factor rule:
+
+```
+dW = lr * dopamine * eligibility(pre, post)
+```
+
+Market features are encoded as input currents into the KCs. MBON firing rates are decoded into a score
+(buy-group rate minus sell-group rate), and stocks are ranked by that score. Dopamine is the reward
+prediction error of the stock's forward return.
+
 ## What is in it
 
 - **Real connectome.** About 1,900 Kenyon cells, 70 output neurons (MBONs) and 300 dopamine neurons from neuPrint (hemibrain v1.2.1), simulated as a leaky integrate-and-fire network. Only the KC-to-MBON synapses learn.
@@ -57,13 +75,24 @@ python -m experiments.eval_suite --panel data_fundamentals/panel.parquet
 
 ## Roadmap
 
-- Survivorship-free universe (prices for removed S&P names).
-- 3D and 2D live dashboard that replays saved out-of-sample scores (in progress; never places trades).
-- Paper trading only if an edge survives rigorous testing.
+- [x] Repo scaffold, trading env, buy-and-hold baseline
+- [x] Extract the mushroom body subgraph from hemibrain (neuPrint)
+- [x] Wire connectome -> LIF sim -> stock scoring
+- [x] Dopamine-gated learning on KC -> MBON synapses
+- [x] Walk-forward validation against ridge, momentum, reversal, random and untrained controls
+- [x] League of flies: cull, breed, saved weights, untouched final holdout
+- [x] Point-in-time SEC fundamentals and S&P 500 membership
+- [x] Strict evaluation kit (sign-flip tests, multiple-testing corrections, costs)
+- [ ] Survivorship-free universe (prices for removed S&P names)
+- [ ] Live 3D / 2D dashboard replaying saved out-of-sample scores (in progress; never places trades)
+- [ ] Paper trading (Alpaca / IBKR) with hard risk limits and a kill switch, only if an edge survives
+- [ ] Live trading, only if paper results justify it
 
 ## Data sources
 
-neuPrint / Janelia hemibrain, Yahoo Finance (prices), SEC EDGAR (fundamentals), Wikipedia (index membership). Please respect each source's terms and rate limits.
+- Hemibrain via neuPrint: https://neuprint.janelia.org
+- FlyWire (~139k neurons, considered, not used): https://flywire.ai
+- Yahoo Finance (prices), SEC EDGAR (fundamentals), Wikipedia (index membership). Please respect each source's terms and rate limits.
 
 ## Disclaimer
 
