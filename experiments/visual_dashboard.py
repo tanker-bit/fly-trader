@@ -23,16 +23,22 @@ Build status (grown in parts):
   [x] Part 9b : raw metrics grid, flashing CRAWLING SEC EDGAR... panel, SILENT dim scanlines
   [x] Part 9c : bigger main monitor + fullscreen + any window shape
   [x] Part 9d : long desk, second monitor (decision tape)
-  [x] Part 9e : view swung 25 deg: the long desk runs across the screen, monitors in a row (like the reference photo)
-  [ ] Part 9f : third monitor (rolling IC history) at the right end of the row
-  [ ] Part 10 : HUD + log stream
-  [ ] Part 11 : rig animation driven by ViewModel (the state machine itself lives in Part 2)
-  [ ] Part 12 : integration + polish
+  [x] Part 9e : long side of the desk faces the fly; three monitors in a row (the side ones angled toward the camera)
+  [x] Part 9f : third monitor (rolling IC history) at the right end of the row
+        9f-a IcContent + render_ic + tests (done); 9f-b IcAccumulator feeds ic_history from LeagueBridge/SimFeed, third monitor drawn (done)
+  [x] Part 10 : HUD + log stream
+        10a HUD top bar (done); 10b log stream + floating Zzz (done)
+  [x] Part 9g : double-size text on all three screens
+  [x] Part 11 : rig animation driven by ViewModel (the state machine itself lives in Part 2)
+        11a body pose: HOLD lean-in, SILENT slump, eyes close, arm stays on the lever (done); 11b wing droop/flutter, bob, desk glow pool (done)
+  [x] Part 12 : integration + polish
+        12a bloom (4x MSAA offscreen target, bright-pass + 2 blurs, B / +/- keys, --no-bloom); trading date dd/mm/yyyy on the monitors (done)
+        12b end-to-end fake-GL frame test over every state, window shape and bloom failure path (done)
 
 Run:   python experiments/visual_dashboard.py --league-root league_data_fundamentals [--panel P] [--sec-root S]
        python experiments/visual_dashboard.py --sim          (synthetic feed, no league needed)
 Check: python experiments/visual_dashboard.py --selftest   (no GPU needed)
-Keys:  TAB next agent | SPACE pause | ESC quit        (fullscreen by default; --windowed [--size 1600x900])
+Keys:  TAB next agent | SPACE pause | B bloom on/off, +/- bloom strength | ESC quit        (fullscreen by default; --windowed [--size 1600x900])
 """
 
 from __future__ import annotations
@@ -1075,15 +1081,11 @@ class FlyRenderer:
         self.hatch = mk(body.eye_hatch, mode="line")
         self.model = translate(*FLY_POS)
 
-    def draw(self, scene, t: float, vm=None):
-        breath = 0.012 * math.sin(t * 2.0)
-        M = self.model @ translate(0, breath, 0)
+    def draw(self, scene, t: float, vm=None, pose=None):
+        M = self.model @ (identity() if pose is None else pose) @ translate(0, body_bob(vm, t), 0)
         self.solid.draw(scene, M)
-        tint, glow = (1.0, 1.0, 1.0), 0.0
-        if vm is not None:
-            tint = {"BUY": COL_GREEN, "SELL": COL_RED}.get(vm.state, (1.0, 1.0, 1.0))
-            glow = 1.0 * getattr(vm, "flash", 0.0)
-        self.eyes.draw(scene, M, tint=tint, emissive=0.30 + glow)
+        tint, emissive = eye_style(vm)
+        self.eyes.draw(scene, M, tint=tint, emissive=emissive)
         self.hatch.draw(scene, M, lit=False, emissive=0.5)
 
     def release(self):
@@ -1166,12 +1168,10 @@ class WingsRenderer:
         self.ctx, self.wings = ctx, wings
         self.plate, self.wire = Mesh(ctx, program, wings.plate), Mesh(ctx, program, wings.wire, mode="line")
 
-    def draw(self, scene, t: float, vm=None, base=None):
-        base = translate(*FLY_POS) if base is None else base
-        amp = 0.05 + (0.35 * getattr(vm, "flash", 0.0) if vm is not None else 0.0)
+    def draw(self, scene, t: float, vm=None, base=None, pose=None, droop: float = 0.0):
+        base = translate(*FLY_POS) @ (identity() if pose is None else pose) if base is None else base
         for i, B in enumerate(self.wings.bases):
-            flap = rotate_x(amp * math.sin(t * 16.0 + i * math.pi))
-            M = base @ B @ flap
+            M = base @ wing_droop_matrix(self.wings.roots[i], droop) @ B @ rotate_x(flap_angle(vm, t, i))
             self.ctx.depth_mask = False                 # translucent plate: test depth, don't write it
             self.plate.draw(scene, M, lit=False, emissive=0.15, alpha=WING_ALPHA)
             self.ctx.depth_mask = True
@@ -1286,11 +1286,11 @@ class LegsRenderer:
         self.static, self.arm = Mesh(ctx, program, legs.static), Mesh(ctx, program, legs.arm)
         self.model = translate(*FLY_POS)
 
-    def draw(self, scene, t: float, vm=None):
-        M = self.model @ translate(0, 0.012 * math.sin(t * 2.0), 0)
+    def draw(self, scene, t: float, vm=None, pose=None):
+        M = self.model @ (identity() if pose is None else pose) @ translate(0, body_bob(vm, t), 0)
         self.static.draw(scene, M)
         if vm is not None:
-            self.arm.update(build_arm(arm_target(vm)))
+            self.arm.update(build_arm(arm_target_in_pose(vm, pose)))
         self.arm.draw(scene, M)
 
     def release(self):
@@ -1387,10 +1387,10 @@ class ConsoleRenderer:
 # The chart is ILLUSTRATIVE: the league places no real trades and has no price feed, so the screen says so.
 # --------------------------------------------------------------------------
 SCREEN_W, SCREEN_H = 384, 240                 # 16:10 like the screen quad
-TITLE_RECT = (0, 0, SCREEN_W, 17)             # x, y, w, h  (y down)
-CHART_RECT = (6, 20, 244, 152)
-METRICS_RECT = (256, 20, 122, 152)            # filled in 9b
-STATUS_RECT = (6, 178, 372, 56)               # filled in 9b
+TITLE_RECT = (0, 0, SCREEN_W, 22)             # x, y, w, h  (y down); 9g: every screen's text is 2x (see TAPE_LIST_RECT)
+CHART_RECT = (6, 26, 180, 122)
+METRICS_RECT = (192, 26, 186, 122)
+STATUS_RECT = (6, 154, 372, 82)
 COL_SCR_BG = (6, 10, 18)
 COL_SCR_PANEL = (14, 22, 36)
 COL_SCR_BORDER = (0, 150, 170)
@@ -1400,7 +1400,7 @@ COL_CANDLE_UP = (40, 220, 90)
 COL_CANDLE_DN = (235, 50, 60)
 COL_SCR_GRID = (24, 38, 56)
 CANDLE_W, CANDLE_GAP = 4, 1
-CHART_LABEL_W = 34                            # right margin reserved for the last-price label
+CHART_LABEL_W = 62                            # right margin reserved for the last-price label
 CHART_CANDLES = (CHART_RECT[2] - 3 - CHART_LABEL_W + CANDLE_GAP) // (CANDLE_W + CANDLE_GAP)   # 41
 CANDLE_STEP_S = 0.4                           # seconds per new candle
 SCREEN_FPS = 15.0
@@ -1496,12 +1496,59 @@ class CandleSeries:
         self.last_close = self._make(self.n - 1, self.c[-2])
 
 
-def render_chart(cv: Canvas, series: CandleSeries, ticker: str = ""):
+NO_DATE = "--/--/----"
+TRADE_DATE_KEYS = ("trade_date", "date", "as_of", "asof", "decision_date", "current_date", "sim_date", "day")
+
+
+def format_trade_date(raw) -> str:
+    """Any plausible date (date/datetime/Timestamp, 'YYYY-MM-DD[...]', 'YYYY/MM/DD', 'YYYYMMDD', 20251103) -> 'dd/mm/yyyy'.
+    Anything else (None, junk, impossible dates, the ambiguous dd/mm vs mm/dd forms) -> '' so the screens show --/--/----."""
+    import datetime as _dt
+    try:
+        if raw is None or isinstance(raw, bool):
+            return ""
+        if hasattr(raw, "year") and hasattr(raw, "month") and hasattr(raw, "day"):
+            d = _dt.date(int(raw.year), int(raw.month), int(raw.day))
+        else:
+            txt = str(raw).strip()
+            m = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$", txt) or re.match(r"^(\d{4})(\d{2})(\d{2})$", txt)
+            if not m:
+                return ""
+            d = _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if not 1000 <= d.year <= 9999:
+            return ""
+        return f"{d.day:02d}/{d.month:02d}/{d.year:04d}"
+    except (ValueError, TypeError, OverflowError):
+        return ""
+
+
+def extract_trade_date(header, view=None) -> str:
+    """The date the fly is trading on, from the header (or an attribute on the view); '' if the feed does not say."""
+    hd = header if isinstance(header, dict) else {}
+    for k in TRADE_DATE_KEYS:
+        out = format_trade_date(hd.get(k))
+        if out:
+            return out
+    for k in TRADE_DATE_KEYS:
+        out = format_trade_date(getattr(view, k, None)) if view is not None else ""
+        if out:
+            return out
+    return ""
+
+
+def date_txt(vm) -> str:
+    return str(getattr(vm, "trade_date", "") or "") or NO_DATE
+
+
+def render_chart(cv: Canvas, series: CandleSeries, ticker: str = "", date: str = ""):
     """Title bar + candlestick panel. Draws only inside TITLE_RECT and CHART_RECT."""
     cv.rect(*TITLE_RECT, COL_SCR_PANEL)
-    cv.text(5, 5, ticker or "----", COL_SCR_TEXT)
+    cv.text(6, 4, (ticker or "----")[:6], COL_SCR_TEXT, 2)
+    dtxt = date or NO_DATE
+    dx = SCREEN_W - 6 - text_width(dtxt, 2)
+    cv.text(dx, 4, dtxt, COL_SCR_VALUE, 2)                                   # the day the fly is trading, dd/mm/yyyy
     tag = "ILLUSTRATIVE DATA"
-    cv.text(SCREEN_W - 5 - text_width(tag), 5, tag, (255, 200, 60))
+    cv.text(dx - 8 - text_width(tag), 8, tag, (255, 200, 60))
     x, y, w, h = CHART_RECT
     cv.rect(x, y, w, h, COL_SCR_PANEL)
     for k in range(1, 5):
@@ -1525,13 +1572,13 @@ def render_chart(cv: Canvas, series: CandleSeries, ticker: str = ""):
     ylast = ypx(series.c[-1])
     cv.rect(x + 1, ylast, w - 2, 1, COL_SCR_DIM)
     label = f"{series.c[-1]:.1f}"
-    cv.text(x + w - 3 - text_width(label), max(y + 2, min(y + h - 9, ylast - 3)), label, COL_SCR_TEXT)
+    cv.text(x + w - 3 - text_width(label, 2), max(y + 2, min(y + h - 16, ylast - 7)), label, COL_SCR_TEXT, 2)
 
 
 COL_SCR_VALUE = (225, 235, 245)
 COL_SCR_AMBER = (255, 200, 60)
-METRIC_ROW_H = 9
-METRIC_COLS = 19                               # characters per grid row (118 px inner width)
+METRIC_ROW_H = 16
+METRIC_COLS = 15                               # characters per grid row at 2x (12 px each)
 METRIC_ABBR = {"Revenues": "REV", "NetIncomeLoss": "NI", "Assets": "ASSETS", "StockholdersEquity": "EQUITY",
                "OperatingIncomeLoss": "OPINC", "GrossProfit": "GP", "Liabilities": "LIAB", "CashAndCashEquivalents": "CASH"}
 SCROLL_ROWS_PER_S = 3.0
@@ -1545,7 +1592,7 @@ def compact_number(v: float) -> str:
     a = abs(v)
     for lim, suf in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
         if a >= lim:
-            return f"{v / lim:.1f}{suf}"
+            return f"{v / lim:.0f}{suf}" if a / lim >= 100 else f"{v / lim:.1f}{suf}"        # <= 5 chars: 123M, 12.3M
     return f"{v:.0f}"
 
 
@@ -1571,11 +1618,11 @@ def render_metrics(cv: Canvas, lines, scroll: float, live: bool):
     x, y, w, h = METRICS_RECT
     cv.rect(x, y, w, h, COL_SCR_PANEL)
     cv.frame(x, y, w, h, COL_SCR_BORDER)
-    cv.text(x + 4, y + 3, "RAW XBRL METRICS", COL_SCR_TEXT if live else COL_SCR_DIM)
-    cv.rect(x + 3, y + 12, w - 6, 1, COL_SCR_GRID)
-    rows = (h - 16) // METRIC_ROW_H
+    cv.text(x + 4, y + 3, "XBRL DATA", COL_SCR_TEXT if live else COL_SCR_DIM, 2)
+    cv.rect(x + 3, y + 20, w - 6, 1, COL_SCR_GRID)
+    rows = (h - 24) // METRIC_ROW_H
     if not lines:
-        cv.text(x + 4, y + 16, "NO DATA", COL_SCR_DIM)
+        cv.text(x + 4, y + 25, "NO DATA", COL_SCR_DIM, 2)
         return
     base = int(scroll)
     for i in range(rows):
@@ -1583,7 +1630,7 @@ def render_metrics(cv: Canvas, lines, scroll: float, live: bool):
         col = COL_SCR_VALUE if live else COL_SCR_DIM
         if live and i == 0:
             col = COL_SCR_AMBER                      # the line being parsed right now
-        cv.text(x + 4, y + 16 + i * METRIC_ROW_H, row, col)
+        cv.text(x + 4, y + 25 + i * METRIC_ROW_H, row, col, 2)
 
 
 STATE_STATUS = {"BUY": "LONG ORDER {tk}", "SELL": "COVER ORDER {tk}", "HOLD": "TRACKING MARKET FLOW {tk}",
@@ -1597,22 +1644,19 @@ def render_status(cv: Canvas, vm, t: float):
     state = getattr(vm, "state", "IDLE")
     if state == "RESEARCH":
         if int(t * BLINK_HZ * 2) % 2 == 0:                                         # flashing
-            cv.text(x + 8, y + 6, "CRAWLING SEC EDGAR...", COL_SCR_AMBER, 2)
-        cv.text(x + 8, y + 26, str(getattr(vm, "research_status", ""))[:60], COL_SCR_TEXT)
-        lines = getattr(vm, "research_lines", None) or []
-        if lines:
-            cur = str(lines[int(getattr(vm, "clock", t) * 12) % len(lines)])
-            cv.text(x + 8, y + 37, cur[:(w - 16) // 6], COL_SCR_DIM)
+            cv.text(x + 8, y + 8, "CRAWLING SEC EDGAR...", COL_SCR_AMBER, 2)
+        cv.text(x + 8, y + 30, str(getattr(vm, "research_status", ""))[:(w - 16) // 12], COL_SCR_TEXT, 2)
         bar_w = 60
         bx = x + 4 + int((t * 90.0) % (w - 8 - bar_w))
-        cv.rect(x + 4, y + h - 8, w - 8, 3, COL_SCR_GRID)
-        cv.rect(bx, y + h - 8, bar_w, 3, COL_SCR_TEXT)
+        cv.rect(x + 4, y + h - 14, w - 8, 6, COL_SCR_GRID)
+        cv.rect(bx, y + h - 14, bar_w, 6, COL_SCR_TEXT)
     else:
         tk = getattr(vm, "ticker", "") or ""
         msg = STATE_STATUS.get(state, state).format(tk=tk).strip()
         col = {"BUY": COL_CANDLE_UP, "SELL": COL_CANDLE_DN, "SILENT": COL_SCR_DIM}.get(state, COL_SCR_TEXT)
         cv.text(x + 8, y + 10, msg[:(w - 16) // 12], col, 2)
-        cv.text(x + 8, y + 36, "ILLUSTRATIVE FEED - NO LIVE TRADES", COL_SCR_DIM)
+        cv.text(x + 8, y + 36, "ILLUSTRATIVE", COL_SCR_DIM, 2)
+        cv.text(x + 8, y + 54, "NO LIVE TRADES", COL_SCR_DIM, 2)
 
 
 def apply_silent(cv: Canvas):
@@ -1645,12 +1689,12 @@ class ScreenContent:
         if state != "SILENT" and t - self._last_step >= CANDLE_STEP_S:
             self._last_step = t
             self.series.step()
-        sig = (state, getattr(vm, "ticker", ""))
+        sig = (state, getattr(vm, "ticker", ""), date_txt(vm))
         if t - self._last_draw < 1.0 / SCREEN_FPS and sig == self._sig:
             return False
         self._last_draw, self._sig = t, sig
         self.canvas.fill(COL_SCR_BG)
-        render_chart(self.canvas, self.series, getattr(vm, "ticker", ""))
+        render_chart(self.canvas, self.series, getattr(vm, "ticker", ""), date_txt(vm))
         render_metrics(self.canvas, getattr(vm, "research_lines", None) or [], self.scroll, state == "RESEARCH")
         render_status(self.canvas, vm, t)
         if state == "SILENT":
@@ -1663,12 +1707,15 @@ class ScreenContent:
 # --------------------------------------------------------------------------
 # Part 9d: side monitor = decision tape (recent decisions and their MBON scores, newest first)
 # --------------------------------------------------------------------------
-TAPE_LIST_RECT = (6, 22, 372, 190)
-TAPE_FOOT_RECT = (6, 216, 372, 20)
-TAPE_ROW_H = 12
-TAPE_ROWS = (TAPE_LIST_RECT[3] - 6) // TAPE_ROW_H          # 15
-TAPE_BAR_CX = 214                                          # zero line of the score bars
-TAPE_BAR_HALF = 100
+# 9g: all text on the side screens is drawn at scale 2 (10 x 14 px glyphs): at fullscreen the screen is only ~265 px wide on a
+# 1080p display, so 1x glyphs (5 x 7 texels) came out ~3 px wide, unreadable.
+TITLE2_RECT = TITLE_RECT
+TAPE_LIST_RECT = (6, 26, 372, 168)
+TAPE_FOOT_RECT = (6, 198, 372, 38)
+TAPE_ROW_H = 17
+TAPE_ROWS = (TAPE_LIST_RECT[3] - 6) // TAPE_ROW_H          # 9
+TAPE_BAR_CX = 262                                          # zero line of the score bars
+TAPE_BAR_HALF = 104
 
 
 def _fnum(v, fmt: str) -> str:
@@ -1680,17 +1727,18 @@ def _fnum(v, fmt: str) -> str:
 
 def render_tape(cv: Canvas, vm):
     cv.fill(COL_SCR_BG)
-    cv.rect(*TITLE_RECT, COL_SCR_PANEL)
-    cv.text(5, 5, "DECISION TAPE", COL_SCR_TEXT)
+    cv.rect(*TITLE2_RECT, COL_SCR_PANEL)
+    cv.text(6, 4, "DECISION TAPE", COL_SCR_TEXT, 2)
     lab = "MBON HZ"
-    cv.text(SCREEN_W - 5 - text_width(lab), 5, lab, COL_SCR_DIM)
+    cv.text(SCREEN_W - 6 - text_width(lab, 2), 4, lab, COL_SCR_DIM, 2)
     x, y, w, h = TAPE_LIST_RECT
     cv.rect(x, y, w, h, COL_SCR_PANEL)
     cv.frame(x, y, w, h, COL_SCR_BORDER)
     tape = list(getattr(vm, "tape", None) or [])[-TAPE_ROWS:][::-1]            # newest first
     cv.rect(TAPE_BAR_CX, y + 2, 1, h - 4, COL_SCR_GRID)
     if not tape:
-        cv.text(x + 8, y + 8, "WAITING FOR DECISIONS...", COL_SCR_DIM)
+        cv.text(x + 8, y + 8, "WAITING FOR", COL_SCR_DIM, 2)
+        cv.text(x + 8, y + 26, "DECISIONS...", COL_SCR_DIM, 2)
     scores = []
     for _, sc in tape:
         try:
@@ -1701,19 +1749,21 @@ def render_tape(cv: Canvas, vm):
     for i, ((tk, _), sc) in enumerate(zip(tape, scores)):
         ry = y + 4 + i * TAPE_ROW_H
         col = COL_CANDLE_UP if sc >= 0 else COL_CANDLE_DN
-        cv.text(x + 8, ry + 1, str(tk)[:6], COL_SCR_VALUE if i else COL_SCR_AMBER)
-        cv.text(x + 62, ry + 1, f"{sc:+.1f}", col)
+        cv.text(x + 8, ry + 1, str(tk)[:5], COL_SCR_VALUE if i else COL_SCR_AMBER, 2)
+        cv.text(x + 74, ry + 1, f"{sc:+.1f}", COL_SCR_VALUE, 2)
         bw = max(1, int(round(TAPE_BAR_HALF * abs(sc) / top)))
-        cv.rect(TAPE_BAR_CX if sc >= 0 else TAPE_BAR_CX - bw + 1, ry + 1, bw, 7, col)
+        cv.rect(TAPE_BAR_CX if sc >= 0 else TAPE_BAR_CX - bw + 1, ry + 4, bw, 9, col)
     fx, fy, fw, fh = TAPE_FOOT_RECT
     cv.rect(fx, fy, fw, fh, COL_SCR_PANEL)
     cv.frame(fx, fy, fw, fh, COL_SCR_BORDER)
     hd = getattr(vm, "header", None) or {}
-    line = f"TOP {str(hd.get('top_id', '--'))[:10]}  IC {_fnum(hd.get('top_ic'), '+.3f')}  RIDGE {_fnum(hd.get('ridge_ic'), '+.3f')}"
-    cv.text(fx + 6, fy + 6, line[:(fw - 12) // 6], COL_SCR_TEXT)
+    cv.text(fx + 6, fy + 4, f"{str(hd.get('top_id', '--'))[:8]} IC {_fnum(hd.get('top_ic'), '+.3f')}", COL_SCR_TEXT, 2)
+    cv.text(fx + 6, fy + 21, f"RIDGE {_fnum(hd.get('ridge_ic'), '+.3f')}", COL_SCR_VALUE, 2)
+    dtxt = date_txt(vm)
+    cv.text(fx + fw - 6 - text_width(dtxt, 2), fy + 21, dtxt, COL_SCR_VALUE, 2)  # trading date, dd/mm/yyyy
     note = str(getattr(vm, "replay_label", "") or "").upper()[:20]
     if note:                                                                   # honest source label, e.g. SIMULATED FEED / REPLAY
-        cv.text(fx + fw - 6 - text_width(note), fy + 6, note, COL_SCR_DIM)
+        cv.text(fx + fw - 6 - text_width(note), fy + 8, note, COL_SCR_DIM)
 
 
 class TapeContent:
@@ -1726,11 +1776,146 @@ class TapeContent:
     def update(self, vm, t: float) -> bool:
         tape = list(getattr(vm, "tape", None) or [])
         hd = getattr(vm, "header", None) or {}
-        sig = (len(tape), tape[-1] if tape else None, hd.get("top_id"), hd.get("top_ic"), hd.get("ridge_ic"), getattr(vm, "state", ""))
+        sig = (len(tape), tape[-1] if tape else None, hd.get("top_id"), hd.get("top_ic"), hd.get("ridge_ic"), getattr(vm, "state", ""), date_txt(vm))
         if sig == self._sig:
             return False
         self._sig = sig
         render_tape(self.canvas, vm)
+        if getattr(vm, "state", "") == "SILENT":
+            apply_silent(self.canvas)
+        self.draws += 1
+        return True
+
+
+# --------------------------------------------------------------------------
+# Part 9f-a: IC history screen (third monitor). Reads vm.ic_history = [(round, top_ic, ridge_ic, untrained_ic), ...]
+# (9f-b fills it from the league). Every number is a real IC from the league, or the screen says it is waiting.
+# --------------------------------------------------------------------------
+IC_PLOT_RECT = (6, 26, 372, 146)
+IC_FOOT_RECT = (6, 176, 372, 60)
+IC_LABEL_W = 66                               # left margin of the plot for the y labels
+IC_MAX_POINTS = 60                            # newest rounds shown
+IC_AVG_N = 3                                  # the rolling average the HUD uses
+COL_IC_TOP = (0, 230, 245)
+COL_IC_AVG = (255, 200, 60)
+COL_IC_RIDGE = (190, 120, 255)
+COL_IC_UNTR = (120, 135, 150)
+COL_IC_ZERO = (60, 100, 120)
+
+
+def _finite(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def rolling_mean(vals, n: int = IC_AVG_N):
+    """Trailing mean over up to n values; None (missing) entries are skipped; a window with no data gives None."""
+    out = []
+    for i in range(len(vals)):
+        w = [v for v in (_finite(x) for x in vals[max(0, i - n + 1):i + 1]) if v is not None]
+        out.append(sum(w) / len(w) if w else None)
+    return out
+
+
+def _clean_history(hist):
+    rows = []
+    for r in list(hist or [])[-IC_MAX_POINTS:]:
+        try:
+            rows.append((r[0], _finite(r[1]), _finite(r[2]), _finite(r[3])))
+        except (TypeError, IndexError, KeyError):
+            continue
+    return rows
+
+
+def _line(cv: Canvas, pts, color, thick: int = 1):
+    """Polyline through (x, y) pixel points, clipped by Canvas.rect; None breaks the line."""
+    prev = None
+    for p in pts:
+        if p is None:
+            prev = None
+            continue
+        if prev is not None:
+            n = int(max(abs(p[0] - prev[0]), abs(p[1] - prev[1]))) + 1
+            for t in np.linspace(0.0, 1.0, n + 1):
+                cv.rect(round(prev[0] + (p[0] - prev[0]) * t), round(prev[1] + (p[1] - prev[1]) * t), thick, thick, color)
+        else:
+            cv.rect(round(p[0]), round(p[1]), thick, thick, color)
+        prev = p
+
+
+def render_ic(cv: Canvas, vm):
+    cv.fill(COL_SCR_BG)
+    cv.rect(*TITLE2_RECT, COL_SCR_PANEL)
+    cv.text(6, 4, "IC HISTORY", COL_SCR_TEXT, 2)
+    lab = "3 RD AVG"
+    cv.text(SCREEN_W - 6 - text_width(lab, 2), 4, lab, COL_IC_AVG, 2)
+    x, y, w, h = IC_PLOT_RECT
+    cv.rect(x, y, w, h, COL_SCR_PANEL)
+    cv.frame(x, y, w, h, COL_SCR_BORDER)
+    fx, fy, fw, fh = IC_FOOT_RECT
+    cv.rect(fx, fy, fw, fh, COL_SCR_PANEL)
+    cv.frame(fx, fy, fw, fh, COL_SCR_BORDER)
+    rows = _clean_history(getattr(vm, "ic_history", None))
+    top = [r[1] for r in rows]
+    avg = rolling_mean(top)
+    ridge = [r[2] for r in rows]
+    untr = [r[3] for r in rows]
+    series = (("TOP", top, COL_IC_TOP, 1), ("AVG", avg, COL_IC_AVG, 2), ("RIDGE", ridge, COL_IC_RIDGE, 1), ("UNTR", untr, COL_IC_UNTR, 1))
+    vals = [v for _, ss, _, _ in series for v in ss if v is not None]
+    if not vals:
+        cv.text(x + 8, y + 8, "STANDBY", COL_SCR_DIM, 2)
+        cv.text(x + 8, y + 26, "WAITING FOR ROUNDS", COL_SCR_DIM, 2)
+        cv.text(fx + 6, fy + 4, "NO IC HISTORY YET", COL_SCR_DIM, 2)
+    else:
+        lo, hi = min(vals + [0.0]), max(vals + [0.0])
+        pad = max((hi - lo) * 0.12, 1e-3)
+        lo, hi = lo - pad, hi + pad
+        px0, px1 = x + IC_LABEL_W, x + w - 6
+        py0, py1 = y + 8, y + h - 8
+        ypix = lambda v: py1 - (v - lo) / (hi - lo) * (py1 - py0)
+        n = len(rows)
+        xpix = (lambda i: (px0 + px1) / 2) if n == 1 else (lambda i: px0 + i * (px1 - px0) / (n - 1))
+        zy = int(round(ypix(0.0)))
+        for g in np.linspace(lo, hi, 5)[1:-1]:                                  # faint horizontal grid + y labels
+            gy = int(round(ypix(g)))
+            if abs(gy - zy) < 18 or gy - 7 < y + 2 or gy + 7 > y + h - 2:       # would collide with the zero label / frame
+                continue
+            cv.rect(px0, gy, px1 - px0, 1, COL_SCR_GRID)
+            cv.text(x + 4, gy - 7, f"{g:+.2f}", COL_SCR_DIM, 2)
+        cv.rect(px0, zy, px1 - px0, 1, COL_IC_ZERO)                             # IC = 0 line
+        cv.text(x + 4, zy - 7, "0", COL_SCR_TEXT, 2)
+        for _, ss, col, th in series[::-1]:                                     # avg drawn on top
+            _line(cv, [None if v is None else (xpix(i), ypix(v)) for i, v in enumerate(ss)], col, th + 1)
+        last = rows[-1]
+        cv.text(fx + 6, fy + 4, f"TOP {_fnum(last[1], '+.3f')}", COL_IC_TOP, 2)
+        cv.text(fx + 196, fy + 4, f"AVG {_fnum(avg[-1], '+.3f')}", COL_IC_AVG, 2)
+        cv.text(fx + 6, fy + 22, f"RIDGE {_fnum(last[2], '+.3f')}", COL_IC_RIDGE, 2)
+        cv.text(fx + 196, fy + 22, f"UNTR {_fnum(last[3], '+.3f')}", COL_IC_UNTR, 2)
+        cv.text(fx + 6, fy + 40, f"ROUND {str(last[0])[:6]}", COL_SCR_VALUE, 2)
+    dtxt = date_txt(vm)
+    cv.text(fx + fw - 6 - text_width(dtxt, 2), fy + 40, dtxt, COL_SCR_VALUE, 2)    # trading date, dd/mm/yyyy
+    note = str(getattr(vm, "replay_label", "") or "").upper()[:20]
+    if note:
+        cv.text(fx + 112, fy + 44, note, COL_SCR_DIM)
+
+
+class IcContent:
+    """Third-monitor screen. Redraws only when the history / state changes."""
+    def __init__(self):
+        self.canvas = Canvas()
+        self._sig = None
+        self.draws = 0
+
+    def update(self, vm, t: float) -> bool:
+        hist = list(getattr(vm, "ic_history", None) or [])
+        sig = (len(hist), repr(hist[-1]) if hist else None, getattr(vm, "state", ""), getattr(vm, "replay_label", ""), date_txt(vm))
+        if sig == self._sig:
+            return False
+        self._sig = sig
+        render_ic(self.canvas, vm)
         if getattr(vm, "state", "") == "SILENT":
             apply_silent(self.canvas)
         self.draws += 1
@@ -1804,6 +1989,607 @@ class ScreenRenderer:
     def release(self):
         for o in (self.vao, self.vbo, self.tex, self.prog):
             o.release()
+
+
+# --------------------------------------------------------------------------
+# Part 10a: HUD top bar (screen-space): round, active universe, top fly id, rolling 3-round average IC.
+# Rasterised on the CPU like the monitor screens, drawn as a clip-space quad across the top of the window, sized so one
+# texel is a square number of window pixels at any aspect ratio. Nothing here is invented: missing data shows "--".
+# --------------------------------------------------------------------------
+HUD_W, HUD_H = 960, 28
+HUD_CELL_W = HUD_W // 4
+COL_HUD_BG = (4, 8, 16)
+
+
+def hud_quad_ndc(aspect: float):
+    """TL, TR, BR, BL corners in clip space; the bar is HUD_W:HUD_H on screen, full width, glued to the top edge."""
+    h = 2.0 * float(aspect) * HUD_H / HUD_W
+    h = min(h, 0.6)                                                      # never swallow the view on tall windows
+    return [(-1.0, 1.0, 0.0), (1.0, 1.0, 0.0), (1.0, 1.0 - h, 0.0), (-1.0, 1.0 - h, 0.0)]
+
+
+def hud_values(vm) -> dict:
+    hd = getattr(vm, "header", None) or {}
+    rows = _clean_history(getattr(vm, "ic_history", None))
+    avg = rolling_mean([r[1] for r in rows])[-1] if rows else None
+    rnd = hd.get("round")
+    uni = hd.get("universe")
+    return dict(round="--" if rnd is None else str(rnd)[:8], universe="--" if uni is None else str(uni)[:8],
+                top_id=str(hd.get("top_id") or "--")[:14], avg_ic=avg)
+
+
+def render_hud(cv: Canvas, vm):
+    cv.fill(COL_HUD_BG)
+    v = hud_values(vm)
+    avg = v["avg_ic"]
+    avg_txt = "--" if avg is None else f"{avg:+.3f}"
+    avg_col = COL_SCR_DIM if avg is None else (COL_CANDLE_UP if avg >= 0 else COL_CANDLE_DN)
+    cells = (("ROUND", v["round"], COL_SCR_VALUE), ("ACTIVE UNIVERSE", v["universe"], COL_SCR_VALUE),
+             ("TOP FLY", v["top_id"], COL_SCR_AMBER), ("3 ROUND AVG IC", avg_txt, avg_col))
+    for i, (label, value, col) in enumerate(cells):
+        x0 = i * HUD_CELL_W
+        if i:
+            cv.rect(x0, 3, 1, HUD_H - 8, COL_SCR_GRID)
+        cv.text(x0 + 10, 3, label, COL_SCR_DIM)
+        cv.text(x0 + 10, 12, value, col, 2)
+    cv.rect(0, HUD_H - 1, HUD_W, 1, COL_SCR_BORDER)
+
+
+class HudContent:
+    """Redraws only when a shown value changes."""
+    def __init__(self):
+        self.canvas = Canvas(HUD_W, HUD_H, COL_HUD_BG)
+        self._sig = None
+        self.draws = 0
+
+    def update(self, vm, t: float = 0.0) -> bool:
+        v = hud_values(vm)
+        sig = (v["round"], v["universe"], v["top_id"], None if v["avg_ic"] is None else round(v["avg_ic"], 3))
+        if sig == self._sig:
+            return False
+        self._sig = sig
+        render_hud(self.canvas, vm)
+        self.draws += 1
+        return True
+
+
+OVL_FRAG = """
+#version 330
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 f_color;
+void main() { f_color = texture(u_tex, v_uv); }
+"""
+
+
+class HudRenderer:
+    """Screen-space overlay quad. content.canvas.px is RGB (HUD), or content.pixels() gives RGBA (log panel, alpha-blended)."""
+    def __init__(self, ctx, content=None, quad_fn=None, size=(HUD_W, HUD_H), rgba: bool = False):
+        import moderngl
+        self.ctx = ctx
+        self.content = content or HudContent()
+        self.quad_fn = quad_fn or hud_quad_ndc
+        self.rgba = rgba
+        self.prog = ctx.program(vertex_shader=SCR_VERT, fragment_shader=OVL_FRAG if rgba else SCR_FRAG)
+        self.vbo = ctx.buffer(screen_quad_geo(self.quad_fn(16 / 9)).tobytes(), dynamic=True)
+        self.vao = ctx.vertex_array(self.prog, [(self.vbo, "3f 2f", "in_pos", "in_uv")])
+        self.tex = ctx.texture(tuple(size), 4 if rgba else 3, self._pixels().tobytes())
+        self.tex.filter = (moderngl.NEAREST, moderngl.NEAREST)                   # crisp pixels, no blur
+        self._aspect = 16 / 9
+        self._moderngl = moderngl
+
+    def _pixels(self):
+        return self.content.pixels() if self.rgba else self.content.canvas.px
+
+    def draw(self, aspect: float, vm):
+        if self.content.update(vm):
+            self.tex.write(self._pixels().tobytes())
+        if abs(aspect - self._aspect) > 1e-6:
+            self._aspect = aspect
+            self.vbo.write(screen_quad_geo(self.quad_fn(aspect)).tobytes())
+        self.ctx.disable(self._moderngl.DEPTH_TEST)
+        self.tex.use(0)
+        self.prog["u_tex"].value = 0
+        self.prog["u_mvp"].write(gl_bytes(np.eye(4, dtype=np.float32)))
+        if not self.rgba:
+            self.prog["u_tint"].value = (1.0, 1.0, 1.0)
+            self.prog["u_glow"].value = 0.0
+        self.vao.render()
+        self.ctx.enable(self._moderngl.DEPTH_TEST)
+
+    def release(self):
+        for o in (self.vao, self.vbo, self.tex, self.prog):
+            o.release()
+
+
+# --------------------------------------------------------------------------
+# Part 10b: log stream (screen-space, bottom-left) + floating "Zzz" (3D, over the fly's head while SILENT)
+# The log shows the lines the feed already wrote in the spec's wording; nothing is made up here.
+# --------------------------------------------------------------------------
+LOG_W, LOG_H = 216, 94                         # texels; one texel is W/960 of the window width (like the HUD)
+LOG_ROW_H = 9
+LOG_ROWS = (LOG_H - 4) // LOG_ROW_H            # 10
+LOG_COLS = 34                                  # characters per row (6 px each)
+LOG_MARGIN = 0.02                              # clip-space gap to the left window edge
+LOG_BOTTOM = 0.11                              # clip-space gap above the bottom edge: clears a Windows taskbar drawn over the window (~4.5%)
+COL_LOG_BG = (4, 8, 16)
+LOG_BG_ALPHA = 150
+
+
+def log_quad_ndc(aspect: float):
+    w = 2.0 * LOG_W / HUD_W
+    h = min(2.0 * float(aspect) * LOG_H / HUD_W, 0.6)
+    x0, y0 = -1.0 + LOG_MARGIN, -1.0 + LOG_BOTTOM
+    return [(x0, y0 + h, 0.0), (x0 + w, y0 + h, 0.0), (x0 + w, y0, 0.0), (x0, y0, 0.0)]
+
+
+def wrap_log(text, cols: int = LOG_COLS) -> list:
+    """Word-wrap to `cols` characters; continuation rows are indented two spaces. Never loses a character of the text."""
+    words = str(text).split()
+    rows, cur = [], ""
+    for w in words:
+        while len(w) > cols - (2 if rows else 0):                          # a single over-long word is split
+            room = cols - (2 if rows else 0) - len(cur) - (1 if cur else 0)
+            if room <= 0:
+                rows.append(("  " if rows else "") + cur)
+                cur = ""
+                continue
+            cur = (cur + " " if cur else "") + w[:room]
+            w = w[room:]
+            rows.append(("  " if rows else "") + cur)
+            cur = ""
+        lim = cols - (2 if rows else 0)
+        if cur and len(cur) + 1 + len(w) > lim:
+            rows.append(("  " if rows else "") + cur)
+            cur = w
+        else:
+            cur = (cur + " " + w) if cur else w
+    if cur or not rows:
+        rows.append(("  " if rows else "") + cur)
+    return rows
+
+
+def log_rows(log, max_rows: int = LOG_ROWS) -> list:
+    """[(rgb, row_text, rank)] oldest first, newest last. Whole messages only, newest messages win, rank 0 = newest."""
+    msgs = []
+    for e in list(log or []):
+        try:
+            rgb, text = e
+            rgb = tuple(max(0, min(255, int(c))) for c in rgb)[:3]
+            if len(rgb) != 3:
+                raise ValueError
+            msgs.append((rgb, str(text)))
+        except (TypeError, ValueError):
+            continue
+    out, used = [], 0
+    for rank, (rgb, text) in enumerate(reversed(msgs)):
+        rows = wrap_log(text)
+        if used + len(rows) > max_rows:
+            break
+        out = [(rgb, r, rank) for r in rows] + out
+        used += len(rows)
+    return out
+
+
+def render_log(cv: Canvas, vm) -> bool:
+    """Draws the rows; returns False (and leaves the canvas empty) when there is nothing to show."""
+    cv.fill(COL_LOG_BG)
+    rows = log_rows(getattr(vm, "log", None))
+    if not rows:
+        return False
+    top = LOG_H - 2 - len(rows) * LOG_ROW_H
+    for i, (rgb, text, rank) in enumerate(rows):
+        fade = 1.0 if rank == 0 else max(0.45, 1.0 - 0.12 * rank)
+        col = tuple(int(c * fade) for c in rgb)
+        cv.text(4, top + i * LOG_ROW_H + 1, text, col)
+    return True
+
+
+class LogContent:
+    def __init__(self):
+        self.canvas = Canvas(LOG_W, LOG_H, COL_LOG_BG)
+        self._sig = None
+        self._has = False
+        self.draws = 0
+
+    def update(self, vm, t: float = 0.0) -> bool:
+        sig = tuple(repr(e) for e in list(getattr(vm, "log", None) or [])[-LOG_ROWS:])
+        if sig == self._sig:
+            return False
+        self._sig = sig
+        self._has = render_log(self.canvas, vm)
+        self.draws += 1
+        return True
+
+    def pixels(self) -> np.ndarray:
+        """RGBA: panel background is translucent, text opaque; fully transparent when there is no log yet."""
+        px = self.canvas.px
+        a = np.where((px != np.array(COL_LOG_BG, dtype=np.uint8)).any(2), 255, LOG_BG_ALPHA if self._has else 0).astype(np.uint8)
+        return np.dstack([px, a])
+
+
+ZZZ_COUNT = 3
+ZZZ_PERIOD = 1.6                               # seconds for one Z to drift up and fade
+ZZZ_STAGGER = 0.55
+COL_ZZZ = (0.72, 0.86, 1.0)
+ZZZ_ORIGIN = (FLY_POS[0] + HEAD_C[0], FLY_POS[1] + HEAD_C[1] + 0.55, FLY_POS[2] + HEAD_C[2])   # just above the head
+
+
+def zzz_params(zzz: float) -> list:
+    """Up to three Zs, staggered, each drifting up and sideways, growing, fading in and out. zzz = seconds into SILENT."""
+    out = []
+    try:
+        z = float(zzz)
+    except (TypeError, ValueError):
+        return out
+    if not math.isfinite(z) or z <= 0.0:
+        return out
+    for i in range(ZZZ_COUNT):
+        age = z - i * ZZZ_STAGGER
+        if age < 0.0:
+            continue
+        ph = (age % ZZZ_PERIOD) / ZZZ_PERIOD
+        out.append(dict(offset=(0.10 * ph, 0.9 * ph, 0.18 * math.sin(ph * math.pi * 2.0)),
+                        size=0.16 + 0.16 * ph, alpha=math.sin(ph * math.pi) ** 0.8 * 0.95))
+    return out
+
+
+def z_glyph_geo(color=COL_ZZZ) -> np.ndarray:
+    """A 'Z' in the XY plane (front faces +z): top bar, bottom bar and the diagonal, unit size (1 wide, 1 tall)."""
+    bar = 0.17
+    top = transform_geo(box_geo(1.0, bar, 0.06, color), translate(0.0, 0.5 - bar / 2, 0.0))
+    bot = transform_geo(box_geo(1.0, bar, 0.06, color), translate(0.0, -0.5 + bar / 2, 0.0))
+    dx, dy = 1.0 - 2 * 0.09 - 0.0, 1.0 - bar
+    diag = transform_geo(box_geo(math.hypot(dx, dy) + 0.08, bar * 0.95, 0.06, color), rotate_z(math.atan2(dy, dx)))
+    return concat_geo(top, bot, diag)
+
+
+def zzz_matrix(par: dict, eye, origin=None) -> np.ndarray:
+    """Y-axis billboard: the glyph's front (+z) turns toward the camera. origin: where the Zs start (follows the head)."""
+    pos = np.array(ZZZ_ORIGIN if origin is None else origin, dtype=np.float64) + np.array(par["offset"])
+    yaw = math.atan2(float(eye[0]) - pos[0], float(eye[2]) - pos[2])
+    return translate(*pos) @ rotate_y(yaw) @ scale(par["size"])
+
+
+class ZzzRenderer:
+    def __init__(self, ctx, program):
+        self.ctx = ctx
+        self.mesh = Mesh(ctx, program, z_glyph_geo())
+
+    def draw(self, scene, t: float, vm=None, origin=None):
+        eye = scene.camera.eye
+        self.ctx.depth_mask = False                    # translucent: test depth, don't write it
+        for par in zzz_params(getattr(vm, "zzz", 0.0) if vm is not None else 0.0):
+            self.mesh.draw(scene, zzz_matrix(par, eye, origin), lit=False, emissive=1.0, alpha=par["alpha"], fog=0.0)
+        self.ctx.depth_mask = True
+
+    def release(self):
+        self.mesh.release()
+
+
+# --------------------------------------------------------------------------
+# Part 12a: bloom. The 3D scene is drawn into an offscreen (4x MSAA) target, bright pixels are extracted, blurred at half
+# resolution and added back, so the neon and the screens glow. HUD and log panel are drawn afterwards, crisp, on the window.
+# If anything in the bloom setup fails the app silently falls back to the plain path. Key B toggles it, --no-bloom disables it.
+# --------------------------------------------------------------------------
+BLOOM_THRESHOLD = 0.50
+BLOOM_KNEE = 0.20
+BLOOM_STRENGTH = 1.10
+BLOOM_SPREAD = 2.0                              # blur tap spacing in half-res texels: a wide halo for the same 13 taps
+BLOOM_RADIUS = 6                                # blur taps each side, at half resolution
+BLOOM_STRENGTH_STEP = 0.25
+BLOOM_STRENGTH_MAX = 3.0
+BLOOM_SAMPLES = 4
+
+
+def gauss_weights(radius: int = BLOOM_RADIUS) -> np.ndarray:
+    """Normalised 1-D gaussian, 2*radius+1 taps (index radius is the centre)."""
+    r = max(int(radius), 1)
+    sigma = r / 2.2
+    x = np.arange(-r, r + 1, dtype=np.float64)
+    w = np.exp(-0.5 * (x / sigma) ** 2)
+    return w / w.sum()
+
+
+def half_size(size) -> tuple:
+    return max(int(size[0]) // 2, 1), max(int(size[1]) // 2, 1)
+
+
+def bloom_bright(img: np.ndarray) -> np.ndarray:
+    """CPU reference of the bright-pass shader: soft-knee threshold on the brightest channel, colour preserved."""
+    c = np.asarray(img, dtype=np.float64)
+    b = c.max(axis=-1, keepdims=True)
+    soft = np.clip(b - (BLOOM_THRESHOLD - BLOOM_KNEE), 0.0, 2.0 * BLOOM_KNEE)
+    soft = soft * soft / (4.0 * BLOOM_KNEE + 1e-5)
+    contrib = np.maximum(soft, b - BLOOM_THRESHOLD) / np.maximum(b, 1e-4)
+    return c * contrib
+
+
+def bloom_blur(img: np.ndarray, radius: int = BLOOM_RADIUS) -> np.ndarray:
+    """CPU reference of the two separable blur passes (edge pixels are clamped like the GL texture)."""
+    w = gauss_weights(radius)
+    out = np.asarray(img, dtype=np.float64)
+    for axis in (0, 1):
+        pad = [(0, 0)] * out.ndim
+        pad[axis] = (radius, radius)
+        p = np.pad(out, pad, mode="edge")
+        acc = np.zeros_like(out)
+        for k, wk in enumerate(w):
+            acc += wk * np.take(p, np.arange(out.shape[axis]) + k, axis=axis)
+        out = acc
+    return out
+
+
+def bloom_composite(scene: np.ndarray, blurred: np.ndarray, strength: float = BLOOM_STRENGTH) -> np.ndarray:
+    return np.clip(np.asarray(scene, dtype=np.float64) + float(strength) * np.asarray(blurred, dtype=np.float64), 0.0, 1.0)
+
+
+BLOOM_VERT = """
+#version 330
+out vec2 v_uv;
+void main() {
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);     // one oversized triangle covers the screen
+    v_uv = p;
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+BLOOM_BRIGHT_FRAG = """
+#version 330
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 f_color;
+void main() {
+    vec3 c = texture(u_tex, v_uv).rgb;
+    float b = max(max(c.r, c.g), c.b);
+    float soft = clamp(b - (%(T).6f - %(K).6f), 0.0, 2.0 * %(K).6f);
+    soft = soft * soft / (4.0 * %(K).6f + 1e-5);
+    float contrib = max(soft, b - %(T).6f) / max(b, 1e-4);
+    f_color = vec4(c * contrib, 1.0);
+}
+""" % dict(T=BLOOM_THRESHOLD, K=BLOOM_KNEE)
+BLOOM_BLUR_FRAG = """
+#version 330
+uniform sampler2D u_tex;
+uniform vec2 u_dir;
+in vec2 v_uv;
+out vec4 f_color;
+const float W[%(N)d] = float[%(N)d](%(W)s);
+void main() {
+    vec3 acc = vec3(0.0);
+    for (int i = 0; i < %(N)d; i++) acc += W[i] * texture(u_tex, v_uv + u_dir * float(i - %(R)d)).rgb;
+    f_color = vec4(acc, 1.0);
+}
+""" % dict(N=2 * BLOOM_RADIUS + 1, R=BLOOM_RADIUS, W=", ".join(f"{w:.8f}" for w in gauss_weights()))
+BLOOM_COMPOSITE_FRAG = """
+#version 330
+uniform sampler2D u_scene;
+uniform sampler2D u_bloom;
+uniform float u_strength;
+in vec2 v_uv;
+out vec4 f_color;
+void main() {
+    vec3 c = texture(u_scene, v_uv).rgb + u_strength * texture(u_bloom, v_uv).rgb;
+    f_color = vec4(min(c, vec3(1.0)), 1.0);
+}
+"""
+
+
+class BloomPipeline:
+    def __init__(self, ctx, size, samples: int = BLOOM_SAMPLES):
+        import moderngl
+        self.ctx, self.mgl, self.size = ctx, moderngl, (int(size[0]), int(size[1]))
+        hw, hh = half_size(self.size)
+        self.half = (hw, hh)
+        self.msaa = ctx.framebuffer(color_attachments=[ctx.renderbuffer(self.size, 4, samples=samples)],
+                                    depth_attachment=ctx.depth_renderbuffer(self.size, samples=samples))
+        self.scene_tex = ctx.texture(self.size, 4)
+        self.resolve = ctx.framebuffer(color_attachments=[self.scene_tex])
+        self.tex_a, self.tex_b = ctx.texture(self.half, 4), ctx.texture(self.half, 4)
+        for tx in (self.scene_tex, self.tex_a, self.tex_b):
+            tx.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            tx.repeat_x = tx.repeat_y = False
+        self.fbo_a, self.fbo_b = ctx.framebuffer(color_attachments=[self.tex_a]), ctx.framebuffer(color_attachments=[self.tex_b])
+        mk = lambda frag: ctx.program(vertex_shader=BLOOM_VERT, fragment_shader=frag)
+        self.p_bright, self.p_blur, self.p_comp = mk(BLOOM_BRIGHT_FRAG), mk(BLOOM_BLUR_FRAG), mk(BLOOM_COMPOSITE_FRAG)
+        self.vaos = [ctx.vertex_array(p, []) for p in (self.p_bright, self.p_blur, self.p_comp)]
+
+    def _tri(self, i):
+        self.vaos[i].render(self.mgl.TRIANGLES, vertices=3)
+
+    def begin(self):
+        self.msaa.use()
+        self.ctx.viewport = (0, 0, *self.size)
+
+    def present(self, strength: float = BLOOM_STRENGTH):
+        ctx = self.ctx
+        ctx.copy_framebuffer(self.resolve, self.msaa)                       # resolves the multisampled scene
+        ctx.disable(self.mgl.DEPTH_TEST | self.mgl.BLEND)
+        self.fbo_a.use(); ctx.viewport = (0, 0, *self.half)
+        self.scene_tex.use(0); self.p_bright["u_tex"].value = 0; self._tri(0)
+        self.fbo_b.use()
+        self.tex_a.use(0); self.p_blur["u_tex"].value = 0; self.p_blur["u_dir"].value = (BLOOM_SPREAD / self.half[0], 0.0); self._tri(1)
+        self.fbo_a.use()
+        self.tex_b.use(0); self.p_blur["u_dir"].value = (0.0, BLOOM_SPREAD / self.half[1]); self._tri(1)
+        ctx.screen.use(); ctx.viewport = (0, 0, *self.size)
+        self.scene_tex.use(0); self.tex_a.use(1)
+        self.p_comp["u_scene"].value = 0; self.p_comp["u_bloom"].value = 1; self.p_comp["u_strength"].value = float(strength)
+        self._tri(2)
+        ctx.enable(self.mgl.DEPTH_TEST | self.mgl.BLEND)
+
+    def release(self):
+        for o in (*self.vaos, self.p_bright, self.p_blur, self.p_comp, self.fbo_a, self.fbo_b, self.tex_a, self.tex_b, self.resolve, self.scene_tex, self.msaa):
+            try:
+                o.release()
+            except Exception:
+                pass
+
+
+def bloom_step(strength: float, direction: int) -> float:
+    """+/- keys: change the glow strength in fixed steps, clamped to 0..BLOOM_STRENGTH_MAX (0 = off, but B still toggles)."""
+    v = float(strength) + BLOOM_STRENGTH_STEP * (1 if direction > 0 else -1)
+    return round(min(max(v, 0.0), BLOOM_STRENGTH_MAX), 4)
+
+
+def make_bloom(ctx, size):
+    """BloomPipeline, or None (with a one-line note) if this GPU/driver cannot build it: the app then runs without bloom."""
+    try:
+        return BloomPipeline(ctx, size)
+    except Exception as e:
+        print(f"[visual_dashboard] bloom disabled ({type(e).__name__}: {e})", file=sys.stderr)
+        return None
+
+
+# --------------------------------------------------------------------------
+# Part 11b: wing flutter / droop, breathing bob and the coloured glow pool on the desk in front of the monitor.
+# --------------------------------------------------------------------------
+WING_DROOP_RAD = 0.5                            # silent: both wings fold down about their roots
+BOB_MAX = 0.05
+GLOW_POOL_ALPHA = 0.30
+GLOW_POOL_RECT = (-2.15, -0.05, 3.0)           # x0, x1 (world, desk top), half-width in z: the desk in front of the main monitor
+
+
+def body_bob(vm, t: float) -> float:
+    """Vertical breathing offset: the feed's own `bob` if it supplies one (clamped), else a gentle sine."""
+    b = getattr(vm, "bob", 0.0) if vm is not None else 0.0
+    try:
+        b = float(b)
+    except (TypeError, ValueError):
+        b = 0.0
+    if not math.isfinite(b) or b == 0.0:
+        return 0.012 * math.sin(t * 2.0)
+    return max(-BOB_MAX, min(BOB_MAX, b))
+
+
+def flap_angle(vm, t: float, i: int) -> float:
+    """Twist of wing i about its span axis. Still when SILENT, busier while RESEARCHing, hard flicks on a flash; the two wings
+    are mirrored (opposite sign). Uses the feed's `wing` value when present, otherwise its own 16 rad/s sine."""
+    state = getattr(vm, "state", "IDLE") if vm is not None else "IDLE"
+    if state == "SILENT":
+        return 0.0
+    amp = 0.05 + (0.05 if state == "RESEARCH" else 0.0) + 0.35 * _cl(getattr(vm, "flash", 0.0) if vm is not None else 0.0)
+    w = getattr(vm, "wing", 0.0) if vm is not None else 0.0
+    try:
+        w = float(w)
+    except (TypeError, ValueError):
+        w = 0.0
+    if not math.isfinite(w) or w == 0.0:
+        w = math.sin(t * 16.0)
+    return (1.0 if i % 2 == 0 else -1.0) * amp * max(-1.0, min(1.0, w))
+
+
+def wing_droop_matrix(root, droop: float) -> np.ndarray:
+    """Fly-local: swing the wing down about its root (rotation about the lateral z axis through the root)."""
+    r = np.asarray(root, dtype=np.float64)
+    return translate(*r) @ rotate_z(float(droop)) @ translate(*(-r))
+
+
+def glow_pool(vm):
+    """(rgb, alpha): the monitor's light spilling onto the desk. Green on BUY, red on SELL, scaled by the flash; none otherwise."""
+    if vm is None:
+        return COL_GREEN, 0.0
+    col = {"BUY": COL_GREEN, "SELL": COL_RED}.get(getattr(vm, "state", ""))
+    if col is None:
+        return COL_GREEN, 0.0
+    return col, GLOW_POOL_ALPHA * _cl(getattr(vm, "flash", 0.0))
+
+
+def glow_pool_geo() -> np.ndarray:
+    """Three nested flat rectangles lying just above the desk top; drawn with the same alpha they stack into a soft-edged pool."""
+    x0, x1, hz = GLOW_POOL_RECT
+    cx, cz, hx = (x0 + x1) / 2.0, 0.0, (x1 - x0) / 2.0
+    parts = []
+    for k, f in enumerate((1.0, 0.72, 0.44)):
+        parts.append(transform_geo(box_geo(2 * hx * f, 0.002, 2 * hz * f, (1.0, 1.0, 1.0)), translate(cx, 0.003 + 0.0005 * k, cz)))
+    return concat_geo(*parts)
+
+
+class GlowPoolRenderer:
+    def __init__(self, ctx, program):
+        self.ctx = ctx
+        self.mesh = Mesh(ctx, program, glow_pool_geo())
+
+    def draw(self, scene, t: float, vm=None):
+        col, a = glow_pool(vm)
+        if a <= 0.004:
+            return
+        self.ctx.depth_mask = False
+        self.mesh.draw(scene, identity(), tint=col, lit=False, emissive=1.0, alpha=a * 0.6, fog=0.0)
+        self.ctx.depth_mask = True
+
+    def release(self):
+        self.mesh.release()
+
+
+# --------------------------------------------------------------------------
+# Part 11a: body pose. HOLD leans in, SILENT slumps over the desk, BUY/SELL shift the shoulders, eyes close when silent or blinking.
+# One eased pose per frame (BodyPose) is applied to body, legs, wings and the Zzz origin; the arm target is re-expressed in the
+# leaned frame so the hand still lands on the lever.
+# --------------------------------------------------------------------------
+LEAN_PIVOT = (-0.10, 0.0, 0.0)                 # fly-local hip, on the seat
+POSE_TARGETS = {                               # state -> (lean deg, forward = +x; drop in y)
+    "IDLE": (0.0, 0.0), "RESEARCH": (5.0, 0.0), "BUY": (4.0, 0.0), "SELL": (-3.0, 0.0),
+    "HOLD": (11.0, 0.0), "SILENT": (26.0, 0.12),
+}
+POSE_RATE = {"SILENT": 1.4, "HOLD": 3.0}       # 1/s easing speed per target state (slump slowly), default below
+POSE_RATE_DEFAULT = 5.0
+COL_EYE_CLOSED = (0.25, 0.10, 0.12)
+
+
+def pose_target(state: str):
+    return POSE_TARGETS.get(str(state), POSE_TARGETS["IDLE"])
+
+
+def pose_matrix(lean_deg: float, drop: float = 0.0) -> np.ndarray:
+    """Fly-local rigid transform: lean forward (+x) about the hip pivot, then sink by `drop`."""
+    px, py, pz = LEAN_PIVOT
+    return translate(0.0, -float(drop), 0.0) @ translate(px, py, pz) @ rotate_z(-math.radians(float(lean_deg))) @ translate(-px, -py, -pz)
+
+
+class BodyPose:
+    """Exponentially eased lean/drop toward the current state's target; frame-rate independent, never overshoots."""
+    def __init__(self):
+        self.lean = 0.0
+        self.drop = 0.0
+        self.droop = 0.0                 # wings fold down when silent
+        self._t = None
+
+    def update(self, vm, t: float):
+        dt = 0.0 if self._t is None else min(max(float(t) - self._t, 0.0), 0.25)
+        self._t = float(t)
+        state = getattr(vm, "state", "IDLE")
+        tl, td = pose_target(state)
+        k = 1.0 - math.exp(-POSE_RATE.get(state, POSE_RATE_DEFAULT) * dt)
+        self.lean += (tl - self.lean) * k
+        self.drop += (td - self.drop) * k
+        self.droop += ((WING_DROOP_RAD if state == "SILENT" else 0.0) - self.droop) * k
+        return self.matrix()
+
+    def matrix(self) -> np.ndarray:
+        return pose_matrix(self.lean, self.drop)
+
+    def head_world(self) -> np.ndarray:
+        return np.array(FLY_POS) + (self.matrix().astype(np.float64) @ np.array([*HEAD_C, 1.0]))[:3]
+
+    def zzz_origin(self) -> np.ndarray:
+        return self.head_world() + np.array([0.0, ZZZ_ORIGIN[1] - (FLY_POS[1] + HEAD_C[1]), 0.0])
+
+
+def arm_target_in_pose(vm, pose) -> np.ndarray:
+    """arm_target is in the un-leaned fly frame; the arm mesh is drawn inside `pose`, so pre-apply its inverse."""
+    tgt = arm_target(vm)
+    if pose is None:
+        return tgt
+    return (np.linalg.inv(np.asarray(pose, dtype=np.float64)) @ np.append(tgt, 1.0))[:3]
+
+
+def eye_style(vm):
+    """(tint, emissive) for the eyes: state colour and flash glow, dark and dim while closed (SILENT or a blink)."""
+    if vm is None:
+        return (1.0, 1.0, 1.0), 0.30
+    if bool(getattr(vm, "eyes_closed", False)) or getattr(vm, "state", "") == "SILENT":
+        return COL_EYE_CLOSED, 0.02
+    tint = {"BUY": COL_GREEN, "SELL": COL_RED}.get(getattr(vm, "state", ""), (1.0, 1.0, 1.0))
+    return tint, 0.30 + 1.0 * _cl(getattr(vm, "flash", 0.0))
 
 
 # --------------------------------------------------------------------------
@@ -1884,10 +2670,12 @@ class ViewModel:
     header: dict = dataclasses.field(default_factory=dict)       # round, universe, top_id, top_ic, ridge_ic, untrained_ic, mode
     log: list = dataclasses.field(default_factory=list)          # [(rgb255, text)]
     tape: list = dataclasses.field(default_factory=list)         # [(ticker, score)]
+    ic_history: list = dataclasses.field(default_factory=list)   # [(round, top_ic, ridge_ic, untrained_ic)], 9f-b fills it
     research_lines: list = dataclasses.field(default_factory=list)
     research_status: str = ""
     replay_label: str = ""
     source: str = "sim"
+    trade_date: str = ""         # dd/mm/yyyy, the day the fly is trading ('' = the feed does not say)
 
 
 def adapt_view(v, source: str = "league", native: bool = False) -> ViewModel:
@@ -1906,7 +2694,7 @@ def adapt_view(v, source: str = "league", native: bool = False) -> ViewModel:
         eyes_closed=bool(p.eyes_closed), wing=p.wing, bob=p.bob, zzz=p.zzz, clock=v.clock,
         header=dict(v.header), log=[(tuple(c), spec_text(s)) for c, s in v.log],
         tape=list(v.tape), research_lines=list(v.research_lines), research_status=v.research_status,
-        replay_label=v.replay_label, source=source)
+        replay_label=v.replay_label, source=source, trade_date=extract_trade_date(v.header, v))
 
 
 def _animator_is_native(cls) -> bool:
@@ -1922,6 +2710,27 @@ def _animator_is_native(cls) -> bool:
         return False
 
 
+class IcAccumulator:
+    """Builds the IC history from the header snapshots the feed reports: one row per round
+    (round, top_ic, ridge_ic, untrained_ic). A repeated round updates its row in place; rows are never invented."""
+    def __init__(self, maxlen: int = 200):
+        self.maxlen = maxlen
+        self.rows: list = []
+
+    def add(self, header) -> list:
+        hd = header or {}
+        rnd = hd.get("round")
+        vals = [_finite(hd.get(k)) for k in ("top_ic", "ridge_ic", "untrained_ic")]
+        if rnd is not None and any(v is not None for v in vals):
+            row = (rnd, *vals)
+            if self.rows and self.rows[-1][0] == rnd:
+                self.rows[-1] = row
+            else:
+                self.rows.append(row)
+                del self.rows[:-self.maxlen]
+        return list(self.rows)
+
+
 class LeagueBridge:
     """Real data. DashboardApp starts its own daemon threads (panel index + 2 s poll of the league folders)."""
     source = "league"
@@ -1930,12 +2739,17 @@ class LeagueBridge:
         from dashboard.app import DashboardApp          # ImportError -> caller falls back to SimFeed
         self.app = DashboardApp(league_root, panel, sec_root, universe_dir, agent, poll, start_threads=True)
         self.native = _animator_is_native(type(self.app.animator))
+        self.ic = IcAccumulator()
 
     def update(self, dt: float):
         self.app.update(dt)
 
     def view(self) -> ViewModel:
-        return adapt_view(self.app.view(), "league", self.native)
+        v = self.app.view()
+        vm = adapt_view(v, "league", self.native)
+        own = getattr(v, "ic_history", None)                      # use the app's own history if a newer scene.py provides one
+        vm.ic_history = list(own) if own else self.ic.add(vm.header)
+        return vm
 
     def next_agent(self):
         self.app.next_agent()
@@ -1953,6 +2767,17 @@ class SimDecision:
     ticker: str
     score: float
     agent: str = "sim_fly"
+
+
+SIM_START_DATE = (2020, 1, 6)                  # the simulated league "trades" one week per round from here (made up, like the rest of the sim)
+
+
+def sim_trade_date(rnd) -> str:
+    import datetime as _dt
+    try:
+        return format_trade_date(_dt.date(*SIM_START_DATE) + _dt.timedelta(days=7 * int(rnd)))
+    except (TypeError, ValueError, OverflowError):
+        return ""
 
 
 class SimFeed:
@@ -1973,6 +2798,8 @@ class SimFeed:
                           untrained_ic=-0.001, universe=499)
         self._ticks = 0
         self._made = 0
+        self.ic = IcAccumulator()
+        self._ic_rows = self.ic.add(self._data)                    # the simulated league starts with its round-0 reading
         self.rlines = [f"{self.rng.choice(self.TICKERS):<6} {self.rng.choice(self.TAGS):<34} "
                        f"{self.rng.randrange(10**7, 10**11)}  FY2025 filed 2025-11-0{self.rng.randint(1, 9)}"
                        for _ in range(40)]
@@ -2017,6 +2844,9 @@ class SimFeed:
                     d["mode"] = "research"
                     d["round"] += 1
                     d["top_ic"] = round(d["top_ic"] + self.rng.gauss(0, 0.004), 4)
+                    d["ridge_ic"] = round(d["ridge_ic"] + self.rng.gauss(0, 0.002), 4)
+                    d["untrained_ic"] = round(d["untrained_ic"] + self.rng.gauss(0, 0.002), 4)
+                    self._ic_rows = self.ic.add(d)
 
     def _run(self):
         while not self._stop.is_set():
@@ -2053,6 +2883,7 @@ class SimFeed:
     def view(self) -> ViewModel:
         with self._lock:
             d = dict(self._data)
+            ic_rows = list(self._ic_rows)
         c = self.clock
         reach, flash = envelopes(self.state, self.t)
         tk = self.rlines[int(c * 12) % len(self.rlines)][:6].strip()
@@ -2063,9 +2894,10 @@ class SimFeed:
             bob=math.sin(c * 2.5) * 0.015, zzz=self.t if self.state == "SILENT" else 0.0, clock=c,
             header=dict(round=d["round"], universe=d["universe"], top_id=d["top_id"], top_ic=d["top_ic"],
                         ridge_ic=d["ridge_ic"], untrained_ic=d["untrained_ic"], mode=d["mode"]),
-            log=list(self.log), tape=list(self.tape), research_lines=self.rlines,
+            log=list(self.log), tape=list(self.tape), ic_history=ic_rows, research_lines=self.rlines,
             research_status=RESEARCH_STATUS[int(c * 1.2) % 3].format(tk=tk),
-            replay_label="SIMULATED FEED (no league data attached)", source="sim")
+            replay_label="SIMULATED FEED (no league data attached)", source="sim",
+            trade_date=sim_trade_date(d.get("round", 0)))
 
     def next_agent(self):
         pass
@@ -2100,7 +2932,7 @@ def make_feed(args):
 # Dashboard app (window, GL context, loop)
 # --------------------------------------------------------------------------
 class VisualDashboard:
-    def __init__(self, feed, fullscreen: bool = True, size=WINDOW_SIZE):
+    def __init__(self, feed, fullscreen: bool = True, size=WINDOW_SIZE, bloom: bool = True):
         import moderngl
         import pygame
 
@@ -2134,7 +2966,7 @@ class VisualDashboard:
         self.vm = feed.view()
         self._caption_t = 0.0
 
-        # Pipeline smoke-test meshes (replaced by real assets in later parts)
+        # Scene objects, in the order the frame draws them (see render())
         self.desk = DeskRenderer(self.ctx, self.prog, build_desk())
         self.chair = ChairRenderer(self.ctx, self.prog, build_chair())
         self.fly = FlyRenderer(self.ctx, self.prog, build_fly_body())
@@ -2148,7 +2980,18 @@ class VisualDashboard:
         side_m = monitor_matrix(SIDE_MONITOR)
         self.side_monitor = MonitorRenderer(self.ctx, self.prog, mon, flat_screen=False, model=side_m, react=False)
         self.side_screen = ScreenRenderer(self.ctx, mon.screen_quad, side_m, content=TapeContent(), react=False)
+        ic_m = monitor_matrix(IC_MONITOR)
+        self.ic_monitor = MonitorRenderer(self.ctx, self.prog, mon, flat_screen=False, model=ic_m, react=False)
+        self.ic_screen = ScreenRenderer(self.ctx, mon.screen_quad, ic_m, content=IcContent(), react=False)
         self.props = PropsRenderer(self.ctx, self.prog, build_tower(), build_mug())
+        self.hud = HudRenderer(self.ctx)
+        self.log_panel = HudRenderer(self.ctx, LogContent(), log_quad_ndc, (LOG_W, LOG_H), rgba=True)
+        self.zzz = ZzzRenderer(self.ctx, self.prog)
+        self.body_pose = BodyPose()
+        self.glow_pool = GlowPoolRenderer(self.ctx, self.prog)
+        self.bloom = make_bloom(self.ctx, self.win_size) if bloom else None
+        self.bloom_on = self.bloom is not None
+        self.bloom_strength = BLOOM_STRENGTH
 
     # -- lifecycle ---------------------------------------------------------
     def handle_events(self):
@@ -2162,6 +3005,12 @@ class VisualDashboard:
                     self.feed.next_agent()
                 elif e.key == self.pygame.K_SPACE:
                     self.feed.toggle_pause()
+                elif e.key == self.pygame.K_b and self.bloom is not None:
+                    self.bloom_on = not self.bloom_on
+                elif e.key in (self.pygame.K_EQUALS, self.pygame.K_PLUS, self.pygame.K_KP_PLUS):
+                    self.bloom_strength = bloom_step(self.bloom_strength, +1)
+                elif e.key in (self.pygame.K_MINUS, self.pygame.K_KP_MINUS):
+                    self.bloom_strength = bloom_step(self.bloom_strength, -1)
 
     def update(self, t: float, dt: float):
         self.feed.update(dt)
@@ -2173,22 +3022,47 @@ class VisualDashboard:
             self.pygame.display.set_caption(
                 f"STONKFLY | {self.vm.source} | round {h.get('round', '-')} | {self.vm.state} {self.vm.ticker}")
 
+    def _drop_bloom(self, e):
+        print(f"[visual_dashboard] bloom failed mid-frame, switching it off ({type(e).__name__}: {e})", file=sys.stderr)
+        self.bloom_on = False
+        self.ctx.screen.use()
+        self.ctx.viewport = (0, 0, *self.win_size)
+
     def render(self, t: float):
+        use_bloom = self.bloom is not None and self.bloom_on
+        if use_bloom:
+            try:
+                self.bloom.begin()
+            except Exception as e:
+                self._drop_bloom(e)
+                use_bloom = False
         self.ctx.clear(*SKY_TOP, 1.0)
         self.scene.begin_frame(self.prog, t)
         vm = self.vm
         self.skyline.draw(self.scene, t)
         self.desk.draw(self.scene, t)
+        self.glow_pool.draw(self.scene, t, vm)      # monitor light on the desk, under the props
         self.monitor.draw(self.scene, t, vm)
         self.screen.draw(self.scene, t, vm)
         self.side_monitor.draw(self.scene, t, vm)
         self.side_screen.draw(self.scene, t, vm)
+        self.ic_monitor.draw(self.scene, t, vm)
+        self.ic_screen.draw(self.scene, t, vm)
         self.props.draw(self.scene, t, vm)
         self.chair.draw(self.scene, t, vm)
-        self.fly.draw(self.scene, t, vm)
+        pose = self.body_pose.update(vm, t)     # eased lean / slump for this frame
+        self.fly.draw(self.scene, t, vm, pose)
         self.console.draw(self.scene, t, vm)
-        self.legs.draw(self.scene, t, vm)
-        self.wings.draw(self.scene, t, vm)      # translucent: last
+        self.legs.draw(self.scene, t, vm, pose)
+        self.wings.draw(self.scene, t, vm, pose=pose, droop=self.body_pose.droop)      # translucent: last
+        self.zzz.draw(self.scene, t, vm, self.body_pose.zzz_origin())        # translucent 3D, after the wings
+        if use_bloom:
+            try:
+                self.bloom.present(self.bloom_strength)      # resolve + glow, onto the window
+            except Exception as e:
+                self._drop_bloom(e)
+        self.hud.draw(self.win_size[0] / self.win_size[1], vm)      # screen-space overlays, over everything, never bloomed
+        self.log_panel.draw(self.win_size[0] / self.win_size[1], vm)
 
     def run(self):
         last = time.perf_counter()
@@ -2253,6 +3127,15 @@ def selftest() -> int:
     ok &= _selftest_screen_panels(check)
     ok &= _selftest_aspect(check)
     ok &= _selftest_side_monitor(check)
+    ok &= _selftest_ic_screen(check)
+    ok &= _selftest_ic_feed(check)
+    ok &= _selftest_hud(check)
+    ok &= _selftest_log_zzz(check)
+    ok &= _selftest_body_pose(check)
+    ok &= _selftest_glow_wings(check)
+    ok &= _selftest_trade_date(check)
+    ok &= _selftest_bloom(check)
+    ok &= _selftest_full_frame(check)
     ok &= _selftest_bridge(check)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
@@ -2862,7 +3745,7 @@ def _selftest_screen(check) -> bool:
     up = (cv.px == np.array(COL_CANDLE_UP, dtype=np.uint8)).all(2).sum()
     dn = (cv.px == np.array(COL_CANDLE_DN, dtype=np.uint8)).all(2).sum()
     check(f"chart: green and red candles both present ({up} / {dn} px)", up > 100 and dn > 100)
-    t_ref = Canvas(); t_ref.fill((0, 0, 0)); t_ref.text(SCREEN_W - 5 - text_width("ILLUSTRATIVE DATA"), 5, "ILLUSTRATIVE DATA", (255, 200, 60))
+    t_ref = Canvas(); t_ref.fill((0, 0, 0)); t_ref.text(SCREEN_W - 6 - text_width(NO_DATE, 2) - 8 - text_width("ILLUSTRATIVE DATA"), 8, "ILLUSTRATIVE DATA", (255, 200, 60))
     check("chart: 'ILLUSTRATIVE DATA' label is drawn in the title bar", ((t_ref.px[:, :, 0] == 255) <= (cv.px[:, :, 0] == 255)).all())
     ser = CandleSeries(11)
     x0 = CHART_RECT[0] + 3
@@ -2915,8 +3798,8 @@ def _selftest_screen_panels(check) -> bool:
     check("abbreviate_tag: known + CamelCase fallback", abbreviate_tag("Revenues") == "REV" and abbreviate_tag("NetIncomeLoss") == "NI"
           and abbreviate_tag("ResearchAndDevelopmentExpense") == "RADE" and abbreviate_tag("Cash") == "Cash")
     row = format_metric_row("AAPL   Revenues                           123456789  FY2025 filed 2025-11-03")
-    check(f"metric row '{row}' parsed to ticker/tag/value", row.startswith("AAPL") and "REV" in row and row.endswith("123.5M") and len(row) <= METRIC_COLS)
-    check("metric row: unparseable line shown raw, truncated", format_metric_row("some other text that is long") == "some other text tha")
+    check(f"metric row '{row}' parsed to ticker/tag/value", row.startswith("AAPL") and "REV" in row and row.endswith("123M") and len(row) <= METRIC_COLS)
+    check("metric row: unparseable line shown raw, truncated", format_metric_row("some other text that is long") == "some other text")
     check("metric rows never exceed the grid width", all(len(format_metric_row(f"MSFTX  StockholdersEquity  {10 ** k}")) <= METRIC_COLS for k in range(1, 14)))
     check("grid text fits inside the panel", METRIC_COLS * 6 - 1 + 4 <= METRICS_RECT[2] - 2)
     feed = SimFeed(start_thread=False)
@@ -2939,7 +3822,7 @@ def _selftest_screen_panels(check) -> bool:
     reg = sc.canvas.px[my + 14:my + mh - 2, mx + 2:mx + mw - 2]
     check("RESEARCH: metrics grid has text rows", (reg == np.array(COL_SCR_VALUE, dtype=np.uint8)).all(2).any() and (reg == np.array(COL_SCR_AMBER, dtype=np.uint8)).all(2).any())
     ref = Canvas(SCREEN_W, SCREEN_H, (0, 0, 0))
-    ref.text(STATUS_RECT[0] + 8, STATUS_RECT[1] + 6, "CRAWLING SEC EDGAR...", (255, 255, 255), 2)
+    ref.text(STATUS_RECT[0] + 8, STATUS_RECT[1] + 8, "CRAWLING SEC EDGAR...", (255, 255, 255), 2)
     refm = ref.px[:, :, 0] == 255
     on = lambda c: (c.canvas.px[refm] == np.array(COL_SCR_AMBER, dtype=np.uint8)).all(1).all()
     off = lambda c: (c.canvas.px[refm] == np.array(COL_SCR_PANEL, dtype=np.uint8)).all(1).all()
@@ -3084,7 +3967,7 @@ def _selftest_side_monitor(check) -> bool:
     render_tape(cv, vm)
     px = cv.px
     lx, ly, lw, lh = TAPE_LIST_RECT
-    row = lambda i: slice(ly + 4 + i * TAPE_ROW_H + 1, ly + 4 + i * TAPE_ROW_H + 8)
+    row = lambda i: slice(ly + 4 + i * TAPE_ROW_H + 4, ly + 4 + i * TAPE_ROW_H + 13)
     green, red = np.array(COL_CANDLE_UP, dtype=np.uint8), np.array(COL_CANDLE_DN, dtype=np.uint8)
     r0 = (px[row(0), :] == red).all(2)            # newest first: NVDA (+1.0)... tape[-1]
     g0 = (px[row(0), :] == green).all(2)
@@ -3099,13 +3982,17 @@ def _selftest_side_monitor(check) -> bool:
     amber = (px[row(0), lx + 8:lx + 62] == np.array(COL_SCR_AMBER, dtype=np.uint8)).all(2).any()
     check("tape: newest ticker highlighted amber", amber)
     foot = Canvas(SCREEN_W, SCREEN_H, (0, 0, 0))
-    foot.text(TAPE_FOOT_RECT[0] + 6, TAPE_FOOT_RECT[1] + 6, "TOP fly_017  IC +0.021  RIDGE +0.004", (255, 255, 255))
-    check("tape footer: top fly id, IC and ridge IC", ((foot.px[:, :, 0] == 255) <= (px == np.array(COL_SCR_TEXT, dtype=np.uint8)).all(2)).all())
+    foot.text(TAPE_FOOT_RECT[0] + 6, TAPE_FOOT_RECT[1] + 4, "fly_017 IC +0.021", (255, 255, 255), 2)
+    ridge_m = Canvas(SCREEN_W, SCREEN_H, (0, 0, 0))
+    ridge_m.text(TAPE_FOOT_RECT[0] + 6, TAPE_FOOT_RECT[1] + 21, "RIDGE +0.004", (255, 255, 255), 2)
+    check("tape footer: top fly id and IC at 2x, ridge IC on the next line",
+          ((foot.px[:, :, 0] == 255) <= (px == np.array(COL_SCR_TEXT, dtype=np.uint8)).all(2)).all() and
+          ((ridge_m.px[:, :, 0] == 255) <= (px == np.array(COL_SCR_VALUE, dtype=np.uint8)).all(2)).all())
     lab = Canvas(SCREEN_W, SCREEN_H, (0, 0, 0))
-    lab.text(TAPE_FOOT_RECT[0] + TAPE_FOOT_RECT[2] - 6 - text_width("SIMULATED FEED"), TAPE_FOOT_RECT[1] + 6, "SIMULATED FEED", (255, 255, 255))
+    lab.text(TAPE_FOOT_RECT[0] + TAPE_FOOT_RECT[2] - 6 - text_width("SIMULATED FEED"), TAPE_FOOT_RECT[1] + 8, "SIMULATED FEED", (255, 255, 255))
     check("tape footer: shows the honest source label", ((lab.px[:, :, 0] == 255) <= (px == np.array(COL_SCR_DIM, dtype=np.uint8)).all(2)).all())
     union = np.zeros((SCREEN_H, SCREEN_W), bool)
-    for r in (TITLE_RECT, TAPE_LIST_RECT, TAPE_FOOT_RECT):
+    for r in (TITLE2_RECT, TAPE_LIST_RECT, TAPE_FOOT_RECT):
         union[r[1]:r[1] + r[3], r[0]:r[0] + r[2]] = True
     check("tape: everything drawn inside the title bar, list and footer", not ((px != np.array(COL_SCR_BG, dtype=np.uint8)).any(2) & ~union).any())
     big = [(f"T{i}", float(i) - 7.0) for i in range(40)]
@@ -3114,7 +4001,7 @@ def _selftest_side_monitor(check) -> bool:
     cv3 = Canvas(); render_tape(cv3, V(tape=[("BAD", "x"), ("OK", None)], header={}))
     check("tape: junk scores and an empty header never raise", cv3.px.shape == (SCREEN_H, SCREEN_W, 3))
     cv4 = Canvas(); render_tape(cv4, V())
-    check("tape: empty tape says it is waiting", (cv4.px[ly + 8:ly + 16, lx + 8:lx + 160] == np.array(COL_SCR_DIM, dtype=np.uint8)).all(2).any())
+    check("tape: empty tape says it is waiting", (cv4.px[ly + 8:ly + 22, lx + 8:lx + 160] == np.array(COL_SCR_DIM, dtype=np.uint8)).all(2).any())
     tc = TapeContent()
     check("TapeContent: first update draws", tc.update(vm, 0.0) is True)
     check("TapeContent: unchanged tape is not redrawn", tc.update(vm, 0.5) is False)
@@ -3124,6 +4011,560 @@ def _selftest_side_monitor(check) -> bool:
     tc.update(V(state="SILENT", tape=tape, header=vm.header), 2.0)
     check("TapeContent: SILENT dims the side screen too", tc.canvas.px.astype(float).mean() < 0.5 * live)
     check("sim feed provides the tape as a list for the side screen", isinstance(sim.view().tape, list))
+    return len(_FAILS) == start
+
+
+def _selftest_ic_screen(check) -> bool:
+    from types import SimpleNamespace as NS
+    start = len(_FAILS)
+    print(" IC history screen (9f-a)")
+    bg = np.array(COL_SCR_BG, dtype=np.uint8)
+    hist = [(r, 0.02 + 0.01 * r, 0.01 * r, -0.005 * r) for r in range(1, 21)]
+    rm = rolling_mean([1.0, 2.0, 3.0, 4.0, None, 6.0])
+    check("rolling mean: trailing 3 window, ramps in", np.allclose(rm[:4], [1.0, 1.5, 2.0, 3.0]))
+    check("rolling mean: missing values skipped, all-missing window is None", np.isclose(rm[5], 5.0) and rolling_mean([None, float("nan")]) == [None, None])
+    check("ViewModel carries ic_history (empty by default)", ViewModel().ic_history == [])
+    cv0 = Canvas(); render_ic(cv0, NS())
+    px, py, pw, ph = IC_PLOT_RECT
+    check("ic: empty history says STANDBY", (cv0.px[py + 8:py + 22, px + 8:px + 200] == np.array(COL_SCR_DIM, dtype=np.uint8)).all(2).any())
+    cv = Canvas(); render_ic(cv, NS(ic_history=hist, replay_label="SIM FEED"))
+    for nm, col in (("top", COL_IC_TOP), ("3rd avg", COL_IC_AVG), ("ridge", COL_IC_RIDGE), ("untrained", COL_IC_UNTR)):
+        check(f"ic: {nm} line is drawn in the plot", (cv.px[py:py + ph, px:px + pw] == np.array(col, dtype=np.uint8)).all(2).any())
+    union = np.zeros((SCREEN_H, SCREEN_W), dtype=bool)
+    for rx, ry, rw, rh in (TITLE2_RECT, IC_PLOT_RECT, IC_FOOT_RECT):
+        union[ry:ry + rh, rx:rx + rw] = True
+    check("ic: everything drawn inside the title bar, plot and footer", not ((cv.px != bg).any(2) & ~union).any())
+    check("ic: plot frame stays intact", (cv.px[py, px:px + pw] == np.array(COL_SCR_BORDER, dtype=np.uint8)).all())
+    # zero line: with symmetric data +/-0.1 the zero line sits mid-plot
+    sym = [(r, v, v, v) for r, v in enumerate([0.1, -0.1, 0.1, -0.1], 1)]
+    cs = Canvas(); render_ic(cs, NS(ic_history=sym))
+    rows_z = np.nonzero((cs.px[py:py + ph, px + IC_LABEL_W + 5:px + pw - 8] == np.array(COL_IC_ZERO, dtype=np.uint8)).all(2).any(1))[0]
+    check("ic: IC = 0 line is drawn near the middle for symmetric data", len(rows_z) >= 1 and abs(rows_z.mean() - ph / 2) < 8)
+    check("ic: footer shows the latest top IC", (cv.px[IC_FOOT_RECT[1] + 4:IC_FOOT_RECT[1] + 18, IC_FOOT_RECT[0] + 6:IC_FOOT_RECT[0] + 190] == np.array(COL_IC_TOP, dtype=np.uint8)).all(2).any())
+    check("ic: honest source label in the footer", (cv.px[IC_FOOT_RECT[1] + 44:IC_FOOT_RECT[1] + 51, IC_FOOT_RECT[0] + 112:IC_FOOT_RECT[0] + 112 + 60] == np.array(COL_SCR_DIM, dtype=np.uint8)).all(2).any())
+    for name, bad in (("junk rows", [("a", "x", None, float("nan")), (2,), None, ("b", 1e9, -1e9, 0.0), (3, float("inf"), 0.1, 0.2)]),
+                      ("one point", [(1, 0.05, 0.02, 0.0)]), ("all None", [(1, None, None, None)]), ("huge history", [(r, 0.01 * (r % 7), 0.0, 0.0) for r in range(500)])):
+        c = Canvas(); render_ic(c, NS(ic_history=bad))
+        check(f"ic: {name} never raises and stays on the canvas", c.px.shape == (SCREEN_H, SCREEN_W, 3))
+    big = Canvas(); render_ic(big, NS(ic_history=[(r, 0.01 * (r % 7), 0.0, 0.0) for r in range(500)]))
+    check("ic: only the newest rounds are plotted (footer count capped)", (big.px != bg).any())
+    ic = IcContent()
+    check("IcContent: first update draws", ic.update(NS(ic_history=hist, state="IDLE"), 0.0) and ic.draws == 1)
+    check("IcContent: unchanged history is not redrawn", not ic.update(NS(ic_history=hist, state="IDLE"), 0.1) and ic.draws == 1)
+    check("IcContent: a new round redraws", ic.update(NS(ic_history=hist + [(21, 0.3, 0.1, 0.0)], state="IDLE"), 0.2) and ic.draws == 2)
+    before = ic.canvas.px.copy()
+    ic.update(NS(ic_history=hist + [(21, 0.3, 0.1, 0.0)], state="SILENT"), 0.3)
+    check("IcContent: SILENT dims the IC screen too", ic.canvas.px.astype(int).sum() < before.astype(int).sum() * 0.7)
+    return len(_FAILS) == start
+
+
+def _selftest_ic_feed(check) -> bool:
+    import inspect
+    start = len(_FAILS)
+    print(" IC history feed + third monitor (9f-b)")
+    acc = IcAccumulator()
+    check("ic feed: empty header adds nothing", acc.add({}) == [] and acc.add({"round": 1}) == [] and acc.add(None) == [])
+    r = acc.add({"round": 1, "top_ic": 0.02, "ridge_ic": 0.01, "untrained_ic": 0.0})
+    check("ic feed: first round makes a row", r == [(1, 0.02, 0.01, 0.0)])
+    r = acc.add({"round": 1, "top_ic": 0.03, "ridge_ic": 0.01, "untrained_ic": 0.0})
+    check("ic feed: same round updates its row in place", len(r) == 1 and r[0][1] == 0.03)
+    r = acc.add({"round": 2, "top_ic": "x", "ridge_ic": None, "untrained_ic": 0.1})
+    check("ic feed: a new round appends; junk values become None, not rows of text", len(r) == 2 and r[1] == (2, None, None, 0.1))
+    small = IcAccumulator(maxlen=5)
+    for i in range(20):
+        small.add({"round": i, "top_ic": i * 0.01})
+    check("ic feed: history is capped (newest kept)", len(small.rows) == 5 and small.rows[-1][0] == 19)
+    sim = SimFeed(start_thread=False)
+    v0 = sim.view()
+    check("sim: IC history starts with the round-0 reading", len(v0.ic_history) == 1 and v0.ic_history[0][0] == 0)
+    sim._data["mode"] = "league"
+    sim._made = 10
+    sim.produce_once()
+    v1 = sim.view()
+    check("sim: finishing a round appends a new IC row", len(v1.ic_history) == 2 and v1.ic_history[-1][0] == 1)
+    check("sim: ridge and untrained IC drift too", v1.ic_history[-1][2:] != v0.ic_history[-1][2:])
+    check("sim: view history is a copy (renderer cannot corrupt the feed)", v1.ic_history is not sim._ic_rows)
+    src = inspect.getsource(VisualDashboard.render) + inspect.getsource(VisualDashboard.__init__)
+    check("app: third monitor and its IC screen are built and drawn", "ic_monitor" in src and "ic_screen" in src and "IcContent()" in src)
+    check("app: third monitor uses the IC_MONITOR placement", "monitor_matrix(IC_MONITOR)" in src)
+    return len(_FAILS) == start
+
+
+def _selftest_hud(check) -> bool:
+    import inspect
+    from types import SimpleNamespace as NS
+    start = len(_FAILS)
+    print(" HUD top bar (10a)")
+    for asp in (16 / 9, 16 / 10, 21 / 9, 4 / 3):
+        q = np.array(hud_quad_ndc(asp))
+        px_w, px_h = 1000.0 * asp, 1000.0
+        bar_px_h = (q[0, 1] - q[2, 1]) / 2 * px_h
+        check(f"hud quad {asp:.2f}: full width, glued to the top, texel-square ({bar_px_h:.0f} px tall for {px_w:.0f} wide)",
+              np.allclose(q[:, 0], (-1, 1, 1, -1)) and q[0, 1] == 1.0 and abs(bar_px_h - px_w * HUD_H / HUD_W) < 1e-6)
+    check("hud quad: clamped on very tall windows", hud_quad_ndc(0.2)[0][1] - hud_quad_ndc(0.2)[2][1] <= 0.6 + 1e-9 and hud_quad_ndc(0.2)[0][1] - hud_quad_ndc(50.0)[2][1] <= 0.6 + 1e-9)
+    hist = [(1, 0.10, 0, 0), (2, 0.20, 0, 0), (3, 0.30, 0, 0), (4, 0.60, 0, 0)]
+    vm = NS(header=dict(round=12, universe=499, top_id="fly_017"), ic_history=hist)
+    v = hud_values(vm)
+    check("hud values: round, universe, top fly", v["round"] == "12" and v["universe"] == "499" and v["top_id"] == "fly_017")
+    check("hud values: avg IC is the 3-round rolling mean of the top IC (0.2, 0.3, 0.6 -> 0.3667)", abs(v["avg_ic"] - (0.2 + 0.3 + 0.6) / 3) < 1e-9)
+    e = hud_values(NS())
+    check("hud values: nothing known shows '--', never a made-up number", e == dict(round="--", universe="--", top_id="--", avg_ic=None))
+    cv = Canvas(HUD_W, HUD_H); render_hud(cv, vm)
+    pxs = cv.px
+    check("hud: positive average IC is green", (pxs[12:26, 3 * HUD_CELL_W:] == np.array(COL_CANDLE_UP, dtype=np.uint8)).all(2).any())
+    cn = Canvas(HUD_W, HUD_H); render_hud(cn, NS(header={}, ic_history=[(1, -0.1, 0, 0)]))
+    check("hud: negative average IC is red", (cn.px[12:26, 3 * HUD_CELL_W:] == np.array(COL_CANDLE_DN, dtype=np.uint8)).all(2).any())
+    check("hud: top fly is amber", (pxs[12:26, 2 * HUD_CELL_W:3 * HUD_CELL_W] == np.array(COL_SCR_AMBER, dtype=np.uint8)).all(2).any())
+    bg = np.array(COL_HUD_BG, dtype=np.uint8)
+    for i in range(4):
+        lab = (pxs[3:10, i * HUD_CELL_W + 10:(i + 1) * HUD_CELL_W] == np.array(COL_SCR_DIM, dtype=np.uint8)).all(2).any()
+        check(f"hud cell {i}: has its small label", lab)
+    worst = NS(header=dict(round="99999999", universe="99999999", top_id="x" * 30), ic_history=[(1, -0.123, 0, 0)])
+    cw = Canvas(HUD_W, HUD_H); render_hud(cw, worst)
+    seps = [i * HUD_CELL_W for i in range(1, 4)]
+    clean = all((cw.px[3:HUD_H - 5, sx] == np.array(COL_SCR_GRID, dtype=np.uint8)).all() for sx in seps)
+    check("hud: the longest values stay inside their cells (separators untouched)", clean)
+    check("hud: bottom border line drawn", (cw.px[HUD_H - 1] == np.array(COL_SCR_BORDER, dtype=np.uint8)).all())
+    for name, bad in (("junk header", NS(header=dict(round=object(), universe=[1], top_id=None), ic_history=[("a", "b", None, None), None])), ("none", NS(header=None, ic_history=None))):
+        c = Canvas(HUD_W, HUD_H); render_hud(c, bad)
+        check(f"hud: {name} never raises", c.px.shape == (HUD_H, HUD_W, 3))
+    hc = HudContent()
+    check("HudContent: first update draws", hc.update(vm) is True and hc.draws == 1)
+    check("HudContent: unchanged values are not redrawn", hc.update(vm) is False and hc.draws == 1)
+    vm2 = NS(header=dict(round=13, universe=499, top_id="fly_017"), ic_history=hist)
+    check("HudContent: a new round redraws", hc.update(vm2) is True and hc.draws == 2)
+    src = inspect.getsource(VisualDashboard.render) + inspect.getsource(VisualDashboard.__init__) + inspect.getsource(HudRenderer.draw)
+    check("app: HUD built, drawn last, with depth test off while drawing", "HudRenderer(" in src and "self.hud.draw(" in src and "DEPTH_TEST" in src)
+    check("app: HUD drawn after the wings (on top of everything)", src.index("self.wings.draw") < src.index("self.hud.draw("))
+    return len(_FAILS) == start
+
+
+def _selftest_log_zzz(check) -> bool:
+    import inspect
+    from types import SimpleNamespace as NS
+    start = len(_FAILS)
+    print(" log stream + floating Zzz (10b)")
+    for asp in (16 / 9, 16 / 10, 21 / 9, 4 / 3):
+        q = np.array(hud_quad_ndc(asp)), np.array(log_quad_ndc(asp))
+        lq = q[1]
+        w_px, h_px = 1000.0 * asp, 1000.0
+        qw, qh = (lq[1, 0] - lq[0, 0]) / 2 * w_px, (lq[0, 1] - lq[3, 1]) / 2 * h_px
+        check(f"log quad {asp:.2f}: bottom-left, on screen, texel-square ({qw / LOG_W:.3f} vs {w_px / HUD_W:.3f} px per texel)",
+              (np.abs(lq[:, :2]) <= 1.0).all() and lq[3, 0] < -0.9 and lq[3, 1] < -0.8 and lq[3, 1] >= -1.0 + 0.09 and abs(qw / LOG_W - qh / LOG_H) < 1e-6)
+    long_msg = "[FLY BUY] Entered Long Position on NVDA - MBON Hz: +1.5"
+    rows = wrap_log(long_msg)
+    check("wrap_log: rows fit the panel and continuation rows are indented", all(len(r) <= LOG_COLS for r in rows) and len(rows) >= 2 and rows[1].startswith("  "))
+    check("wrap_log: no text lost", "".join(long_msg.split()) == "".join("".join(rows).split()))
+    check("wrap_log: short line stays one row, empty text one blank row", wrap_log("[FLY HOLD] Defending Position on AAPL") == ["[FLY HOLD] Defending Position on AAPL"][:1] or len(wrap_log("[FLY HOLD] Defending Position on AAPL")) <= 2)
+    wl = wrap_log("x" * 100)
+    check("wrap_log: a single over-long word is split, nothing lost or overlong", all(len(r) <= LOG_COLS for r in wl) and "".join("".join(wl).split()) == "x" * 100)
+    check("wrap_log: empty text gives one blank row", wrap_log("") == [""])
+    green, red = (57, 255, 20), (255, 40, 50)
+    log = [(green, "[FLY BUY] Entered Long Position on NVDA - MBON Hz: +1.5"), (red, "[FLY SELL] Covered Short Position on AAPL - MBON Hz: -2.0")]
+    lr = log_rows(log)
+    first_sell = [r for r in lr if r[1].startswith("[FLY SELL]")]
+    check("log rows: oldest first, newest last, rank 0 is the newest", lr[-1][2] == 0 and lr[0][2] == 1 and len(first_sell) == 1 and first_sell[0][2] == 0 and lr[0][1].startswith("[FLY BUY]"))
+    many = [(green, f"[FLY BUY] Entered Long Position on T{i} - MBON Hz: +1.0") for i in range(30)]
+    lm = log_rows(many)
+    check(f"log rows: capped at {LOG_ROWS} rows, whole messages only, newest kept", len(lm) <= LOG_ROWS and "T29" in "".join(r[1] for r in lm) and "T0 " not in "".join(r[1] for r in lm) and lm[0][1].startswith("[FLY"))
+    check("log rows: junk entries are skipped without raising", log_rows([None, 5, ("x",), ((1, 2), "a"), (green, "ok"), ("rgb", "b")]) [-1][1] == "ok")
+    check("log rows: empty or None log gives no rows", log_rows([]) == [] and log_rows(None) == [])
+    cv = Canvas(LOG_W, LOG_H, COL_LOG_BG)
+    shown = render_log(cv, NS(log=log))
+    check("log: both colours drawn (newest at full brightness)", shown and (cv.px == np.array(red, dtype=np.uint8)).all(2).any() and ((cv.px.astype(int) > 0) & (cv.px.astype(int) <= np.array(green))).all(2).any())
+    ce = Canvas(LOG_W, LOG_H, COL_LOG_BG)
+    check("log: nothing to show leaves the canvas empty", render_log(ce, NS(log=[])) is False and (ce.px == np.array(COL_LOG_BG, dtype=np.uint8)).all())
+    rows_y = np.nonzero((cv.px != np.array(COL_LOG_BG, dtype=np.uint8)).any(2).any(1))[0]
+    check("log: text stays inside the panel, bottom-aligned", rows_y.min() >= 0 and rows_y.max() < LOG_H - 1 and rows_y.max() > LOG_H - 14)
+    lc = LogContent()
+    check("LogContent: no log means fully transparent", lc.update(NS(log=[])) and (lc.pixels()[:, :, 3] == 0).all())
+    check("LogContent: first log redraws", lc.update(NS(log=log)) is True)
+    check("LogContent: unchanged log is not redrawn", lc.update(NS(log=log)) is False)
+    pxl = lc.pixels()
+    check("LogContent: RGBA, translucent panel, opaque text", pxl.shape == (LOG_H, LOG_W, 4) and (pxl[:, :, 3] == LOG_BG_ALPHA).any() and (pxl[:, :, 3] == 255).any())
+    check("LogContent: a new line redraws", lc.update(NS(log=log + [(green, "new")])) is True)
+    sim = SimFeed(start_thread=False)
+    sim.log.append(format_log("BUY", "NVDA", 1.5, "a"))
+    check("log: the sim feed's own wording renders", "[FLY BUY] Entered Long Position on" in log_rows(sim.view().log)[0][1] and "NVDA" in "".join(r[1] for r in log_rows(sim.view().log)))
+    # Zzz
+    check("zzz: nothing when awake / junk", zzz_params(0.0) == [] and zzz_params(-1) == [] and zzz_params(None) == [] and zzz_params(float("nan")) == [])
+    check("zzz: one Z at first, then up to three", len(zzz_params(0.1)) == 1 and len(zzz_params(1.0)) == 2 and len(zzz_params(5.0)) == ZZZ_COUNT)
+    ok_alpha = all(0.0 <= p["alpha"] <= 1.0 for z in np.linspace(0.01, 8, 80) for p in zzz_params(z))
+    check("zzz: alpha always in 0..1", ok_alpha)
+    a1, a2 = zzz_params(0.3)[0], zzz_params(0.9)[0]
+    check("zzz: a Z drifts up and grows as it ages", a2["offset"][1] > a1["offset"][1] and a2["size"] > a1["size"])
+    check("zzz: fades in from nothing", zzz_params(0.001)[0]["alpha"] < 0.05)
+    g = z_glyph_geo()
+    check("zzz glyph: finite, whole triangles, stride 9, 3 boxes", g.shape[1] == 9 and len(g) == 3 * 36 and np.isfinite(g).all())
+    check("zzz glyph: about 1 wide and 1 tall, centred", abs(g[:, 0].max() - 0.5) < 0.1 and abs(g[:, 0].min() + 0.5) < 0.1 and abs(g[:, 1].max() - 0.5) < 0.01 and abs(g[:, 1].min() + 0.5) < 0.01)
+    # Z shape: the diagonal runs from the top-right to the bottom-left
+    diag = g[72:]
+    check("zzz glyph: the diagonal leans from the top-right down to the bottom-left", diag[diag[:, 1] > 0, 0].mean() > diag[diag[:, 1] < 0, 0].mean() + 0.3)
+    eye = Camera(16 / 9).eye
+    par = zzz_params(0.8)[0]
+    M = zzz_matrix(par, eye).astype(np.float64)
+    pos = M[:3, 3]
+    front = M[:3, :3] @ np.array([0.0, 0.0, 1.0])
+    to_cam = eye - pos
+    fh, ch = front[[0, 2]], to_cam[[0, 2]]
+    check("zzz: billboard front faces the camera (turns about the vertical axis only)", front[1] == 0.0 and float(fh @ ch) / (np.linalg.norm(fh) * np.linalg.norm(ch)) > 0.999)
+    check("zzz: floats above the fly's head", pos[1] > FLY_POS[1] + HEAD_C[1] + HEAD_R[1] and abs(pos[0] - (FLY_POS[0] + HEAD_C[0])) < 0.5)
+    clip = Camera(16 / 9).proj_view.astype(np.float64) @ np.append(pos, 1.0)
+    nd = clip[:2] / clip[3]
+    check("zzz: on screen, below the HUD strip", (np.abs(nd) < 0.9).all() and nd[1] < 0.8)
+    src = inspect.getsource(VisualDashboard.render) + inspect.getsource(VisualDashboard.__init__)
+    check("app: log panel + Zzz built and drawn", "LogContent()" in src and "ZzzRenderer(" in src and "self.zzz.draw(" in src and "self.log_panel.draw(" in src)
+    check("app: Zzz after the wings, HUD and log last", src.index("self.wings.draw") < src.index("self.zzz.draw(") < src.index("self.hud.draw(") < src.index("self.log_panel.draw("))
+    return len(_FAILS) == start
+
+
+def _selftest_body_pose(check) -> bool:
+    import inspect
+    from types import SimpleNamespace as NS
+    start = len(_FAILS)
+    print(" body pose (11a)")
+    lean = lambda st: pose_target(st)[0]
+    check("pose targets: SILENT slumps most, then HOLD leans in, RESEARCH a little, IDLE none", lean("SILENT") > lean("HOLD") > lean("RESEARCH") > lean("IDLE") == 0.0)
+    check("pose targets: SELL pushes back (negative lean), BUY leans slightly in", lean("SELL") < 0 < lean("BUY") < lean("HOLD"))
+    check("pose targets: only SILENT sinks; unknown state = IDLE", pose_target("SILENT")[1] > 0 and all(pose_target(k)[1] == 0 for k in ("IDLE", "BUY", "SELL", "HOLD", "RESEARCH")) and pose_target("???") == (0.0, 0.0))
+    for st in POSE_TARGETS:
+        check(f"pose targets: every state ({st}) has a target", st in POSE_TARGETS)
+    I = pose_matrix(0.0, 0.0).astype(np.float64)
+    check("pose matrix: zero lean is the identity", np.allclose(I, np.eye(4), atol=1e-6))
+    for dg in (-3.0, 11.0, 26.0):
+        M = pose_matrix(dg, 0.1).astype(np.float64)
+        R = M[:3, :3]
+        check(f"pose matrix {dg:+.0f} deg: rigid (orthonormal, det +1)", np.allclose(R @ R.T, np.eye(3), atol=1e-5) and abs(np.linalg.det(R) - 1.0) < 1e-5)
+    Mp = pose_matrix(26.0, 0.0).astype(np.float64)
+    pv = np.array(LEAN_PIVOT)
+    check("pose matrix: the hip pivot stays put when there is no sink", np.allclose((Mp @ np.append(pv, 1.0))[:3], pv, atol=1e-6))
+    head = np.array(HEAD_C)
+    head2 = (Mp @ np.append(head, 1.0))[:3]
+    check("pose matrix: leaning forward moves the head toward +x (the desk) and lowers it", head2[0] > head[0] + 0.4 and head2[1] < head[1] - 0.3)
+    check("pose matrix: the leaned head stays above the desk-top (y=0 world) and seat", FLY_POS[1] + (pose_matrix(26.0, 0.12).astype(np.float64) @ np.append(head, 1.0))[1] > 0.3)
+    check("pose matrix: the slumped head stays clear of the monitors (world x < 0)", FLY_POS[0] + head2[0] < -1.0)
+    bp = BodyPose()
+    vm = NS(state="HOLD")
+    bp.update(vm, 0.0)
+    prev, mono, t = 0.0, True, 0.0
+    for k in range(1, 400):
+        t = k / 60.0
+        bp.update(vm, t)
+        mono &= bp.lean >= prev - 1e-12 and bp.lean <= 11.0 + 1e-9
+        prev = bp.lean
+    check("BodyPose: eases toward the HOLD lean, monotonic, never overshoots", mono and abs(bp.lean - 11.0) < 0.05)
+    a, b = BodyPose(), BodyPose()
+    for k in range(0, 61):
+        a.update(NS(state="HOLD"), k / 60.0)
+    for k in range(0, 31):
+        b.update(NS(state="HOLD"), k / 30.0)
+    check("BodyPose: frame-rate independent (60 fps vs 30 fps agree within 0.1 deg)", abs(a.lean - b.lean) < 0.1)
+    c, d = BodyPose(), BodyPose()
+    c.update(NS(state="HOLD"), 0.0); d.update(NS(state="SILENT"), 0.0)
+    for k in range(1, 61):
+        c.update(NS(state="HOLD"), k / 60.0); d.update(NS(state="SILENT"), k / 60.0)
+    check("BodyPose: the slump is slower than the lean-in (after 1 s HOLD is >90% there, SILENT is not)", c.lean / 11.0 > 0.90 and d.lean / 26.0 < 0.85)
+    e = BodyPose()
+    e.update(NS(state="SILENT"), 0.0)
+    for k in range(1, 300):
+        e.update(NS(state="SILENT"), k / 60.0)
+    before = e.lean
+    e.update(NS(state="BUY"), 299 / 60.0 + 1 / 60.0)
+    check("BodyPose: a state change moves smoothly (no jump)", 0.0 < before - e.lean < 3.0)
+    g = BodyPose()
+    g.update(NS(state="HOLD"), 0.0)
+    g.update(NS(state="HOLD"), 100.0)
+    check("BodyPose: a huge time gap (pause) cannot overshoot or blow up", 0.0 <= g.lean <= 11.0 and np.isfinite(g.lean))
+    z = BodyPose(); z.update(NS(state="HOLD"), 1.0); l0 = z.lean; z.update(NS(state="HOLD"), 1.0)
+    check("BodyPose: zero dt changes nothing; junk vm is IDLE", z.lean == l0 and np.isfinite(BodyPose().update(NS(), 0.0)).all())
+    # arm still lands on the lever
+    vmb = NS(reach=1.0, lever_buy=1.0, lever_sell=0.0)
+    for dg in (0.0, 4.0, 11.0):
+        P = pose_matrix(dg, 0.0).astype(np.float64)
+        tgt_local = arm_target_in_pose(vmb, P)
+        hand_world = FLY_POS + (P @ np.append(tgt_local, 1.0))[:3]
+        grip_world = lever_tip_world(lever_angle(vmb))
+        check(f"arm: hand stays on the lever knob under a {dg:g} deg lean ({np.linalg.norm(hand_world - grip_world):.4f} off)", np.linalg.norm(hand_world - grip_world) < 1e-4)
+    check("arm: no pose leaves the target unchanged", np.allclose(arm_target_in_pose(vmb, None), arm_target(vmb)))
+    # eyes
+    open_t, open_e = eye_style(NS(state="IDLE", eyes_closed=False, flash=0.0))
+    cl_t, cl_e = eye_style(NS(state="IDLE", eyes_closed=True, flash=0.0))
+    check("eyes: closed (blink) is dark and dim", cl_e < 0.1 and cl_t == COL_EYE_CLOSED and open_e >= 0.3)
+    check("eyes: SILENT keeps them closed even if the feed forgot", eye_style(NS(state="SILENT", eyes_closed=False, flash=1.0))[1] < 0.1)
+    check("eyes: BUY glows green, SELL red, and the flash adds glow", eye_style(NS(state="BUY", flash=0.5))[0] == COL_GREEN and eye_style(NS(state="SELL", flash=0.5))[0] == COL_RED and eye_style(NS(state="BUY", flash=1.0))[1] > eye_style(NS(state="BUY", flash=0.0))[1])
+    check("eyes: no vm gives a sane default; flash out of range is clamped", eye_style(None)[1] == 0.30 and eye_style(NS(state="BUY", flash=9.0))[1] <= 1.30 + 1e-9)
+    # zzz follows the head
+    bz = BodyPose(); bz.lean, bz.drop = 26.0, 0.12
+    o0, o1 = BodyPose().zzz_origin(), bz.zzz_origin()
+    check("zzz origin: at rest it is the old fixed spot", np.allclose(o0, ZZZ_ORIGIN, atol=1e-6))
+    check("zzz origin: follows the slumped head (forward and lower), still above it", o1[0] > o0[0] + 0.3 and o1[1] < o0[1] and o1[1] > bz.head_world()[1] + 0.4)
+    src = inspect.getsource(VisualDashboard.render) + inspect.getsource(VisualDashboard.__init__)
+    check("app: one eased pose per frame feeds body, legs, wings and the Zzz", "BodyPose()" in src and "self.body_pose.update(" in src and "self.fly.draw(self.scene, t, vm, pose)" in src and "self.legs.draw(self.scene, t, vm, pose)" in src and "pose=pose" in src and "self.body_pose.zzz_origin()" in src)
+    check("app: the pose is computed before the fly is drawn", src.index("self.body_pose.update(") < src.index("self.fly.draw("))
+    return len(_FAILS) == start
+
+
+def _selftest_glow_wings(check) -> bool:
+    import inspect
+    from types import SimpleNamespace as NS
+    start = len(_FAILS)
+    print(" wings, bob and glow pool (11b)")
+    check("bob: no feed value gives the gentle default sine", abs(body_bob(None, 0.0)) < 1e-9 and abs(body_bob(NS(bob=0.0), math.pi / 4)) <= 0.012 + 1e-9)
+    check("bob: the feed's value is used, clamped to +/-0.05", body_bob(NS(bob=0.015), 0.0) == 0.015 and body_bob(NS(bob=9.0), 0.0) == BOB_MAX and body_bob(NS(bob=-9.0), 0.0) == -BOB_MAX)
+    check("bob: junk and NaN fall back to the default", abs(body_bob(NS(bob="x"), 0.3)) <= 0.012 + 1e-9 and abs(body_bob(NS(bob=float("nan")), 0.3)) <= 0.012 + 1e-9)
+    check("wings: SILENT holds still", all(flap_angle(NS(state="SILENT", wing=1.0, flash=1.0), t, i) == 0.0 for t in (0.0, 0.3, 1.1) for i in (0, 1)))
+    check("wings: the two wings are mirrored (opposite sign)", all(abs(flap_angle(NS(state="IDLE", wing=0.7, flash=0.0), 0.2, 0) + flap_angle(NS(state="IDLE", wing=0.7, flash=0.0), 0.2, 1)) < 1e-12 for _ in (0,)))
+    big = abs(flap_angle(NS(state="BUY", wing=1.0, flash=1.0), 0.0, 0))
+    check("wings: a flash flicks them harder than idle, RESEARCH a little busier", big > 0.3 and abs(flap_angle(NS(state="RESEARCH", wing=1.0, flash=0.0), 0, 0)) > abs(flap_angle(NS(state="IDLE", wing=1.0, flash=0.0), 0, 0)))
+    check("wings: amplitude stays bounded for wild wing values", all(abs(flap_angle(NS(state="BUY", wing=w, flash=9.0), 0, 0)) <= 0.40 + 1e-9 for w in (-50.0, 50.0, float("inf"), "x")))
+    check("wings: with no wing value from the feed they still flutter on their own", flap_angle(NS(state="IDLE", wing=0.0, flash=0.0), 0.1, 0) != 0.0 and flap_angle(None, 0.1, 0) != 0.0)
+    w = build_wings()
+    tips = []
+    for i, B in enumerate(w.bases):
+        tip0 = (B @ np.array([WING_LEN, 0, 0, 1.0]))[:3]
+        tip1 = (wing_droop_matrix(w.roots[i], WING_DROOP_RAD) @ B @ np.array([WING_LEN, 0, 0, 1.0]))[:3]
+        tips.append((tip0, tip1))
+    check("wings: the silent droop lowers both wing tips", all(t1[1] < t0[1] - 0.4 for t0, t1 in tips))
+    check("wings: the droop is mirror-symmetric and keeps the roots fixed", np.isclose(tips[0][1][1], tips[1][1][1]) and np.isclose(tips[0][1][2], -tips[1][1][2]) and
+          all(np.allclose((wing_droop_matrix(w.roots[i], 0.5) @ np.append(w.roots[i], 1.0))[:3], w.roots[i], atol=1e-6) for i in (0, 1)))
+    check("wings: zero droop is the identity", np.allclose(wing_droop_matrix(w.roots[0], 0.0), np.eye(4), atol=1e-6))
+    bp = BodyPose()
+    bp.update(NS(state="SILENT"), 0.0)
+    for k in range(1, 400):
+        bp.update(NS(state="SILENT"), k / 60.0)
+    check("BodyPose: the wings droop when silent and lift again after", abs(bp.droop - WING_DROOP_RAD) < 0.01)
+    for k in range(400, 800):
+        bp.update(NS(state="IDLE"), k / 60.0)
+    check("BodyPose: ... and recover when awake", abs(bp.droop) < 0.01)
+    gb, ab = glow_pool(NS(state="BUY", flash=1.0))
+    gs, as_ = glow_pool(NS(state="SELL", flash=0.5))
+    check("glow pool: green on BUY, red on SELL, proportional to the flash", gb == COL_GREEN and gs == COL_RED and np.isclose(ab, GLOW_POOL_ALPHA) and np.isclose(as_, GLOW_POOL_ALPHA / 2))
+    check("glow pool: none for IDLE/HOLD/SILENT/RESEARCH, no vm, or no flash", all(glow_pool(NS(state=st, flash=1.0))[1] == 0.0 for st in ("IDLE", "HOLD", "SILENT", "RESEARCH")) and glow_pool(None)[1] == 0.0 and glow_pool(NS(state="BUY", flash=0.0))[1] == 0.0)
+    check("glow pool: alpha is clamped for wild flash values", glow_pool(NS(state="BUY", flash=7.0))[1] <= GLOW_POOL_ALPHA + 1e-12 and glow_pool(NS(state="BUY", flash=-3.0))[1] == 0.0)
+    g = glow_pool_geo()
+    d = build_desk()
+    top = d.boxes[1]
+    check("glow pool: whole triangles, finite", g.shape[1] == 9 and len(g) == 3 * 36 and np.isfinite(g).all())
+    check("glow pool: lies on the desk top (just above it, within its footprint)", g[:, 1].min() > 0.0 and g[:, 1].max() < 0.02 and g[:, 0].min() >= top[0] - top[3] / 2 and g[:, 0].max() <= top[0] + top[3] / 2 and np.abs(g[:, 2]).max() <= top[5] / 2)
+    check("glow pool: in front of the main monitor (between the fly and the screen)", g[:, 0].max() < MON_POS[0] - 0.05 and g[:, 0].min() > FLY_POS[0])
+    src = inspect.getsource(VisualDashboard.render) + inspect.getsource(VisualDashboard.__init__)
+    check("app: glow pool built, drawn after the desk and before the props", "GlowPoolRenderer(" in src and src.index("self.desk.draw(") < src.index("self.glow_pool.draw(") < src.index("self.props.draw("))
+    check("app: wings get the eased droop", "droop=self.body_pose.droop" in src)
+    return len(_FAILS) == start
+
+
+def _selftest_trade_date(check) -> bool:
+    import datetime as _dt
+    import inspect
+    from types import SimpleNamespace as NS
+    start = len(_FAILS)
+    print(" trading date on the monitors (dd/mm/yyyy)")
+    good = {"2025-11-03": "03/11/2025", "2025-11-03T09:30:00": "03/11/2025", "2025/1/5": "05/01/2025", "20251103": "03/11/2025", 20251103: "03/11/2025",
+            _dt.date(2019, 12, 31): "31/12/2019", _dt.datetime(2020, 2, 29, 16, 0): "29/02/2020"}
+    check("format_trade_date: ISO, slash, compact, int, date and datetime inputs", all(format_trade_date(k) == v for k, v in good.items()))
+    check("format_trade_date: always dd/mm/yyyy with 2+2+4 digits", all(re.fullmatch(r"\d\d/\d\d/\d{4}", format_trade_date(k)) for k in good))
+    bad = [None, "", "junk", "03/11/2025", "11/03/2025", "2025-13-01", "2025-02-30", "2023-02-29", 0, 1.5, True, float("nan"), "0000-01-01", [], {}]
+    check("format_trade_date: junk, impossible and ambiguous dd/mm vs mm/dd forms give '' (never a guess)", all(format_trade_date(b) == "" for b in bad))
+    check("format_trade_date: leap day valid, day/month order not mixed up (2025-04-03 is 3 April)", format_trade_date("2024-02-29") == "29/02/2024" and format_trade_date("2025-04-03") == "03/04/2025")
+    check("extract_trade_date: header keys in priority order", extract_trade_date({"date": "2021-05-06", "trade_date": "2021-05-07"}) == "07/05/2021" and extract_trade_date({"as_of": "2018-01-02"}) == "02/01/2018")
+    check("extract_trade_date: falls back to a view attribute, then to ''", extract_trade_date({}, NS(date="2022-03-04")) == "04/03/2022" and extract_trade_date({}, NS()) == "" and extract_trade_date(None) == "" and extract_trade_date({"date": "x"}, None) == "")
+    check("extract_trade_date: skips an unreadable key and uses the next", extract_trade_date({"trade_date": "junk", "date": "2020-07-08"}) == "08/07/2020")
+    check("ViewModel: trade_date defaults to ''", ViewModel().trade_date == "")
+    check("date_txt: blank shows --/--/----", date_txt(NS()) == NO_DATE and date_txt(NS(trade_date="")) == NO_DATE and date_txt(NS(trade_date="03/11/2025")) == "03/11/2025")
+    check("sim: dates advance one week per round, dd/mm/yyyy", sim_trade_date(0) == "06/01/2020" and sim_trade_date(1) == "13/01/2020" and sim_trade_date(52) == "04/01/2021" and sim_trade_date("x") == "")
+    sim = SimFeed(start_thread=False)
+    v0 = sim.view()
+    check("sim: the view carries the date and it changes with the round", v0.trade_date == "06/01/2020")
+    sim._data["mode"] = "league"; sim._made = 10; sim.produce_once()
+    check("sim: a new round moves the date forward", sim.view().trade_date == "13/01/2020")
+    check("adapt_view: the date is taken from the league header", "extract_trade_date(v.header, v)" in inspect.getsource(adapt_view))
+    d = "03/11/2025"
+    on = lambda cv, text, x, y, sc, col: ((lambda ref: ((ref.px[:, :, 0] == 255) <= (cv.px == np.array(col, dtype=np.uint8)).all(2)).all())(
+        (lambda r: (r.text(x, y, text, (255, 255, 255), sc), r)[1])(Canvas(SCREEN_W, SCREEN_H, (0, 0, 0)))))
+    cm = Canvas(); render_chart(cm, CandleSeries(11), "META", d)
+    check("main screen: the date is in the title bar at 2x, right-aligned", on(cm, d, SCREEN_W - 6 - text_width(d, 2), 4, 2, COL_SCR_VALUE))
+    cm2 = Canvas(); render_chart(cm2, CandleSeries(11), "META", "")
+    check("main screen: unknown date shows --/--/----", on(cm2, NO_DATE, SCREEN_W - 6 - text_width(NO_DATE, 2), 4, 2, COL_SCR_VALUE))
+    check("main screen: the date, ticker and ILLUSTRATIVE tag do not overlap (ticker < tag < date)", 6 + text_width("MMMMMM", 2) < SCREEN_W - 6 - text_width(d, 2) - 8 - text_width("ILLUSTRATIVE DATA"))
+    ct = Canvas(); render_tape(ct, NS(tape=[("AAPL", 1.0)], header=dict(top_id="fly_017", top_ic=0.02, ridge_ic=0.004), replay_label="SIMULATED FEED", trade_date=d))
+    fx, fy, fw, fh = TAPE_FOOT_RECT
+    check("tape screen: the date is in the footer at 2x", on(ct, d, fx + fw - 6 - text_width(d, 2), fy + 21, 2, COL_SCR_VALUE))
+    check("tape screen: footer text does not run into the date (ridge line < date)", fx + 6 + text_width("RIDGE +0.004", 2) < fx + fw - 6 - text_width(d, 2) - 6 and 6 + text_width("MMMMMMMM IC +0.000", 2) + 6 < fw - 6 - text_width("SIMULATED FEED")) 
+    ci = Canvas(); render_ic(ci, NS(ic_history=[(r, 0.01 * r, 0.0, 0.0) for r in range(1, 9)], replay_label="SIM FEED", trade_date=d))
+    ix, iy, iw, ih = IC_FOOT_RECT
+    check("ic screen: the date is in the footer at 2x", on(ci, d, ix + iw - 6 - text_width(d, 2), iy + 40, 2, COL_SCR_VALUE))
+    check("ic screen: ROUND, source label and date fit side by side", ix + 6 + text_width("ROUND 999999", 2) < ix + 112 + 20 * 6 and ix + 112 + 20 * 6 < ix + iw - 6 - text_width(d, 2) + 1)
+    sc = ScreenContent(); sc.update(NS(state="IDLE", ticker="AAPL", trade_date="01/01/2020", research_lines=[]), 1.0)
+    check("main screen: a changed date forces a redraw", sc.update(NS(state="IDLE", ticker="AAPL", trade_date="08/01/2020", research_lines=[]), 1.0001) is True)
+    tc, ic = TapeContent(), IcContent()
+    a1 = tc.update(NS(tape=[], header={}, state="IDLE", trade_date="01/01/2020"), 0.0); a2 = tc.update(NS(tape=[], header={}, state="IDLE", trade_date="08/01/2020"), 0.1)
+    b1 = ic.update(NS(ic_history=[], state="IDLE", trade_date="01/01/2020"), 0.0); b2 = ic.update(NS(ic_history=[], state="IDLE", trade_date="08/01/2020"), 0.1)
+    check("tape and IC screens: a changed date forces a redraw", a1 and a2 and b1 and b2)
+    return len(_FAILS) == start
+
+
+def _selftest_bloom(check) -> bool:
+    import inspect
+    from unittest import mock
+    start = len(_FAILS)
+    print(" bloom (12a)")
+    w = gauss_weights()
+    check("gauss: normalised, 2R+1 taps, symmetric, strictly falling from the centre", np.isclose(w.sum(), 1.0) and len(w) == 2 * BLOOM_RADIUS + 1 and np.allclose(w, w[::-1]) and (np.diff(w[:BLOOM_RADIUS + 1]) > 0).all())
+    check("gauss: radius below 1 is clamped, tails are tiny but positive", len(gauss_weights(0)) == 3 and w.min() > 0 and w.min() < 0.02)
+    check("half_size: halves, floors, never below 1", half_size((1920, 1080)) == (960, 540) and half_size((1281, 721)) == (640, 360) and half_size((1, 1)) == (1, 1) and half_size((0, 0)) == (1, 1))
+    chk = np.linspace(0, 1, 101)
+    gray = np.stack([chk, chk, chk], -1)
+    br = bloom_bright(gray)[:, 0]
+    check("bright pass: nothing below the soft knee, never negative, never brighter than the input", (br[chk <= BLOOM_THRESHOLD - BLOOM_KNEE] == 0).all() and (br >= 0).all() and (br <= chk + 1e-12).all())
+    check("bright pass: monotonic in brightness and continuous across the knee (no jumps)", (np.diff(br) >= -1e-12).all() and np.abs(np.diff(br)).max() < 0.05)
+    col = np.array([[1.0, 0.4, 0.1]])
+    bc = bloom_bright(col)[0]
+    check("bright pass: keeps the hue (channel ratios unchanged)", np.allclose(bc / bc[0], col[0] / col[0, 0]))
+    check("bright pass: black stays black, a dim scene produces no bloom at all", (bloom_bright(np.zeros((4, 4, 3))) == 0).all() and (bloom_bright(np.full((8, 8, 3), 0.2)) == 0).all())
+    imp = np.zeros((40, 40, 3)); imp[20, 20] = 1.0
+    bl = bloom_blur(imp)
+    check("blur: conserves energy for a point away from the edges", np.isclose(bl.sum(), imp.sum()))
+    check("blur: symmetric, centred, spreads exactly R pixels each way and no further", np.allclose(bl[20 - BLOOM_RADIUS:21 + BLOOM_RADIUS, 20 - BLOOM_RADIUS:21 + BLOOM_RADIUS], bl[20 - BLOOM_RADIUS:21 + BLOOM_RADIUS, 20 - BLOOM_RADIUS:21 + BLOOM_RADIUS][::-1, ::-1]) and bl[20, 20, 0] == bl.max() and (bl[20, 20 + BLOOM_RADIUS + 1:] == 0).all() and bl[20, 20 + BLOOM_RADIUS, 0] > 0)
+    check("blur: a constant image stays constant (edges clamp)", np.allclose(bloom_blur(np.full((9, 9, 3), 0.3)), 0.3))
+    scene = np.full((40, 40, 3), 0.2); scene[20, 20] = 1.0
+    out = bloom_composite(scene, bloom_blur(bloom_bright(scene)))
+    check("composite: a bright pixel lights up its neighbours but not the far field", out[20, 22, 0] > 0.2 + 1e-4 and np.isclose(out[0, 0, 0], 0.2) and out[20, 20 + BLOOM_RADIUS + 3, 0] == 0.2)
+    check("composite: strength 0 is the scene, and the result never exceeds 1", np.allclose(bloom_composite(scene, bloom_blur(bloom_bright(scene)), 0.0), scene) and bloom_composite(np.ones((3, 3, 3)), np.ones((3, 3, 3)), 5.0).max() == 1.0)
+    check("composite: a scene below the threshold is returned untouched (no haze)", np.allclose(bloom_composite(np.full((6, 6, 3), 0.2), bloom_blur(bloom_bright(np.full((6, 6, 3), 0.2)))), 0.2))
+    wts = [float(x) for x in re.search(r"float\[\d+\]\((.*?)\)", BLOOM_BLUR_FRAG).group(1).split(",")]
+    check("shader: blur weights are the gaussian, 13 taps, sum 1", len(wts) == 13 and np.allclose(wts, w, atol=1e-7) and abs(sum(wts) - 1.0) < 1e-6)
+    check("shader: bright pass uses the same threshold and knee as the reference", f"{BLOOM_THRESHOLD:.6f}" in BLOOM_BRIGHT_FRAG and f"{BLOOM_KNEE:.6f}" in BLOOM_BRIGHT_FRAG and "%" not in BLOOM_BRIGHT_FRAG)
+    check("shader: full-screen triangle, composite clamps to 1", "gl_VertexID" in BLOOM_VERT and "min(c, vec3(1.0))" in BLOOM_COMPOSITE_FRAG and all(f.lstrip().startswith("#version 330") for f in (BLOOM_VERT, BLOOM_BRIGHT_FRAG, BLOOM_BLUR_FRAG, BLOOM_COMPOSITE_FRAG)))
+    fake_gl = mock.patch.dict(sys.modules, {"moderngl": mock.MagicMock()})      # the GL library is not needed to test the call sequence
+    fake_gl.start()
+    ctx = mock.MagicMock()
+    for fn in ("framebuffer", "texture", "renderbuffer", "depth_renderbuffer", "program", "vertex_array"):
+        getattr(ctx, fn).side_effect = lambda *a, **k: mock.MagicMock()                  # every GL object is its own mock
+    order = []
+    ctx.disable.side_effect = lambda *a: order.append("off")
+    ctx.enable.side_effect = lambda *a: order.append("on")
+    pipe = BloomPipeline(ctx, (1920, 1080))
+    sizes = [c.args[0] for c in ctx.texture.call_args_list]
+    check("pipeline: one full-size scene texture and two half-size blur textures", sizes == [(1920, 1080), (960, 540), (960, 540)])
+    check("pipeline: the scene renders into a 4x multisampled target with depth", ctx.renderbuffer.call_args.kwargs.get("samples") == 4 and ctx.depth_renderbuffer.call_args.kwargs.get("samples") == 4)
+    ctx.reset_mock()
+    pipe.begin()
+    check("pipeline.begin: binds the offscreen target at full size", pipe.msaa.use.called and ctx.viewport == (0, 0, 1920, 1080))
+    pipe.present(0.4)
+    check("pipeline.present: resolves MSAA into the scene texture first", ctx.copy_framebuffer.call_args.args == (pipe.resolve, pipe.msaa))
+    check("pipeline.present: bright -> blur H -> blur V on the half-size targets, then the window", pipe.fbo_a.use.call_count == 2 and pipe.fbo_b.use.call_count == 1 and ctx.screen.use.called)
+    check("pipeline.present: three full-screen triangles drawn (bright, blur, blur) + composite", sum(v.render.call_count for v in pipe.vaos) == 4)
+    check("pipeline.present: the blur taps are spread BLOOM_SPREAD texels apart", pipe.p_blur["u_dir"].value == (0.0, BLOOM_SPREAD / 540) and BLOOM_SPREAD > 1.0)
+    check("pipeline.present: composite uses the strength given, ends at full size on the window", pipe.p_comp["u_strength"].value == 0.4 and ctx.viewport == (0, 0, 1920, 1080))
+    check("pipeline.present: depth test and blending are turned off for the passes and back on after", order == ["off", "on"])
+    pipe.release()
+    check("pipeline.release: never raises, even if one object fails", True)
+    bad = mock.MagicMock(); bad.framebuffer.side_effect = RuntimeError("no fbo")
+    with mock.patch("sys.stderr"):
+        check("make_bloom: a GPU that cannot build it gives None (the app keeps running)", make_bloom(bad, (640, 360)) is None)
+    check("make_bloom: working context gives a pipeline", isinstance(make_bloom(mock.MagicMock(), (640, 360)), BloomPipeline))
+    fake_gl.stop()
+    src = inspect.getsource(VisualDashboard.render)
+    check("app: scene drawn into the bloom target before the first draw call", src.index("self.bloom.begin()") < src.index("self.ctx.clear(") < src.index("self.skyline.draw("))
+    check("app: bloom resolved after the translucent 3D, before the HUD and log panel (those stay crisp)", src.index("self.zzz.draw(") < src.index("self.bloom.present(") < src.index("self.hud.draw(") < src.index("self.log_panel.draw("))
+    check("app: a failing bloom pass is dropped and rendering carries on", "_drop_bloom" in src and "self.ctx.screen.use()" in inspect.getsource(VisualDashboard._drop_bloom))
+    init = inspect.getsource(VisualDashboard.__init__) + inspect.getsource(VisualDashboard.handle_events)
+    check("bloom_step: fixed steps, clamped to 0..max, direction only matters by sign", bloom_step(1.1, 1) == 1.35 and bloom_step(0.1, -1) == 0.0 and bloom_step(0.0, -1) == 0.0 and bloom_step(BLOOM_STRENGTH_MAX, 1) == BLOOM_STRENGTH_MAX and bloom_step(1.0, -7) == 0.75)
+    check("app: +/- change the live strength, which is what present() receives", "bloom_step(self.bloom_strength, +1)" in init and "bloom_step(self.bloom_strength, -1)" in init and "self.bloom.present(self.bloom_strength)" in src)
+    check("bloom defaults are visible: strength >= 1, threshold <= 0.55, wide spread", BLOOM_STRENGTH >= 1.0 and BLOOM_THRESHOLD <= 0.55 and BLOOM_SPREAD >= 2.0)
+    check("app: --no-bloom switches it off and key B toggles it", "make_bloom(" in init and "K_b" in init and "bloom_on = not self.bloom_on" in init and "bloom: bool = True" in init)
+    check("main: --no-bloom flag exists and is passed through", "--no-bloom" in inspect.getsource(parse_args if "parse_args" in globals() else main) or "--no-bloom" in open(__file__, encoding="utf-8").read())
+    return len(_FAILS) == start
+
+
+def _selftest_full_frame(check) -> bool:
+    """End-to-end: the real VisualDashboard (every renderer, the bloom pipeline, the overlays) run for whole frames against a fake
+    GL / pygame. Catches wiring mistakes (wrong arguments, missing attributes, wrong draw order) that unit tests cannot see.
+    It cannot judge how anything looks: that needs a real GPU."""
+    import dataclasses
+    from unittest import mock
+    start = len(_FAILS)
+    print(" full frame, every state, fake GL (12b)")
+    states = [("RESEARCH", {}), ("BUY", dict(flash=1.0, reach=1.0, lever_buy=1.0)), ("SELL", dict(flash=0.6, reach=1.0, lever_sell=1.0)),
+              ("HOLD", {}), ("SILENT", dict(zzz=2.0, eyes_closed=True)), ("IDLE", {})]
+    check("every state the feed can produce has a pose target and a text line", all(st in POSE_TARGETS for st, _ in states))
+
+    def build(size, bloom=True):
+        gl, pg = mock.MagicMock(), mock.MagicMock()
+        pg.display.get_window_size.return_value = size
+        pg.event.get.return_value = []
+        feed = SimFeed(start_thread=False)
+        with mock.patch.dict(sys.modules, {"moderngl": gl, "pygame": pg}):
+            app = VisualDashboard(feed, fullscreen=False, size=size, bloom=bloom)
+        return app, feed, gl, pg
+
+    def run(app, feed, frames_per_state=12, vm_extra=None):
+        base = feed.view()
+        t, err = 0.0, None
+        try:
+            for st, kw in states:
+                for _ in range(frames_per_state):
+                    t += 1 / 60
+                    vm = dataclasses.replace(base, state=st, ticker="NVDA", trade_date="03/11/2025", log=[((57, 255, 20), "[FLY BUY] Entered Long Position on NVDA - MBON Hz: +1.5")], **kw)
+                    feed.view = lambda vm=vm: vm
+                    app.update(t, 1 / 60)
+                    app.render(t)
+        except Exception as e:                                        # noqa: BLE001 - report any failure as a test result
+            err = e
+        return err, t
+
+    app, feed, gl, pg = build((1280, 720))
+    order = []
+    for name, obj in (("bloom.begin", app.bloom), ("bloom.present", app.bloom)):
+        meth = name.split(".")[1]
+        orig = getattr(obj, meth)
+        setattr(obj, meth, (lambda o=orig, n=name: (lambda *a, **k: (order.append(n), o(*a, **k))[1]))())
+    for name in ("skyline", "desk", "glow_pool", "monitor", "screen", "side_screen", "ic_screen", "fly", "legs", "wings", "zzz", "hud", "log_panel"):
+        obj = getattr(app, name)
+        orig = obj.draw
+        setattr(obj, "draw", (lambda o=orig, n=name: (lambda *a, **k: (order.append(n), o(*a, **k))[1]))())
+    orig_clear = app.ctx.clear
+    app.ctx.clear = lambda *a, **k: (order.append("clear"), orig_clear(*a, **k))[1]
+    err, _ = run(app, feed)
+    check(f"full frame: 6 states x 12 frames render without an exception ({type(err).__name__ if err else 'ok'}: {err})" if err else "full frame: 6 states x 12 frames render without an exception", err is None)
+    frames = order.count("clear")
+    check("full frame: exactly one clear and one bloom begin/present per frame", frames == 72 and order.count("bloom.begin") == 72 and order.count("bloom.present") == 72)
+    clears = [i for i, n in enumerate(order) if n == "clear"]
+    one = order[:clears[1] - 1] if len(clears) > 1 else order          # frame 1 only (the next frame starts with bloom.begin)
+    pos = {n: one.index(n) for n in ("bloom.begin", "clear", "skyline", "desk", "glow_pool", "screen", "side_screen", "ic_screen", "fly", "legs", "wings", "zzz", "bloom.present", "hud", "log_panel") if n in one}
+    check("full frame: draw order is bloom target, clear, world, wings, Zzz, bloom resolve, then HUD and log on top",
+          len(pos) == 15 and pos["bloom.begin"] < pos["clear"] < pos["skyline"] < pos["desk"] < pos["glow_pool"] < pos["fly"] < pos["wings"] < pos["zzz"] < pos["bloom.present"] < pos["hud"] < pos["log_panel"])
+    check("full frame: all three monitor screens are drawn each frame", all(n in one for n in ("screen", "side_screen", "ic_screen")))
+    check("full frame: the HUD and log are never inside the bloom (drawn after the resolve)", pos["bloom.present"] < pos["hud"] and pos["bloom.present"] < pos["log_panel"])
+    check("full frame: the pose has settled toward the last state (IDLE) after the SILENT slump started", abs(app.body_pose.lean) < 26.0 and np.isfinite(app.body_pose.lean))
+    for name, size in (("21:9", (2560, 1080)), ("4:3", (1024, 768)), ("5:4", (1280, 1024)), ("tiny", (320, 200)), ("portrait", (720, 1280))):
+        a2, f2, _, _ = build(size)
+        e2, _ = run(a2, f2, frames_per_state=2)
+        check(f"full frame at {name} ({size[0]}x{size[1]}): renders without an exception" + (f" [{type(e2).__name__}: {e2}]" if e2 else ""), e2 is None)
+    a3, f3, _, _ = build((1280, 720), bloom=False)
+    e3, _ = run(a3, f3, frames_per_state=3)
+    check("full frame: with bloom off (--no-bloom) the plain path renders", e3 is None and a3.bloom is None)
+    a4, f4, _, _ = build((1280, 720))
+    a4.bloom.present = mock.MagicMock(side_effect=RuntimeError("driver said no"))
+    with mock.patch("sys.stderr"):
+        e4, _ = run(a4, f4, frames_per_state=3)
+    check("full frame: a bloom failure mid-frame is survived and bloom is switched off", e4 is None and a4.bloom_on is False)
+    a5, f5, _, _ = build((1280, 720))
+    a5.bloom.begin = mock.MagicMock(side_effect=RuntimeError("no fbo"))
+    with mock.patch("sys.stderr"):
+        e5, _ = run(a5, f5, frames_per_state=3)
+    check("full frame: a bloom failure at the start of a frame is survived too", e5 is None and a5.bloom_on is False)
+    a6, f6, gl6, pg6 = build((1280, 720))
+    pg6.event.get.return_value = [mock.MagicMock(type=pg6.KEYDOWN, key=pg6.K_b)]
+    a6.handle_events()
+    check("keys: B toggles the bloom off", a6.bloom_on is False)
+    a6.bloom_on = True
+    pg6.event.get.return_value = [mock.MagicMock(type=pg6.KEYDOWN, key=pg6.K_EQUALS)]
+    a6.handle_events()
+    check("keys: + raises the bloom strength by one step", abs(a6.bloom_strength - (BLOOM_STRENGTH + BLOOM_STRENGTH_STEP)) < 1e-9)
+    pg6.event.get.return_value = [mock.MagicMock(type=pg6.KEYDOWN, key=pg6.K_ESCAPE)]
+    a6.handle_events()
+    check("keys: ESC stops the main loop", a6.running is False)
     return len(_FAILS) == start
 
 
@@ -3310,6 +4751,7 @@ def parse_args(argv=None):
     ap.add_argument("--nice", type=int, default=5, help="raise this process's niceness (POSIX) so training keeps priority")
     ap.add_argument("--windowed", action="store_true", help="open a normal window instead of fullscreen")
     ap.add_argument("--size", default="1600x900", help="window size for --windowed, WxH")
+    ap.add_argument("--no-bloom", action="store_true", help="skip the glow post-process (older GPUs)")
     ap.add_argument("--selftest", action="store_true")
     return ap.parse_args(argv)
 
@@ -3327,7 +4769,7 @@ def main(argv=None):
         w, h = (int(v) for v in args.size.lower().split("x"))
     except ValueError:
         w, h = WINDOW_SIZE
-    VisualDashboard(make_feed(args), fullscreen=not args.windowed, size=(w, h)).run()
+    VisualDashboard(make_feed(args), fullscreen=not args.windowed, size=(w, h), bloom=not args.no_bloom).run()
 
 
 if __name__ == "__main__":
