@@ -1,7 +1,7 @@
 """Run one fly's $1M long-only account through history.
 
 prices: DataFrame, index = dates, columns = tickers (adjusted close). scores: DataFrame, same layout, the fly's score per
-ticker per date (NaN = not scored). Scores from date t are traded at the price of the NEXT date (exec_lag=1) so a fly can never
+ticker per date (NaN = not scored). Scores may be sparse (e.g. every 5th date): the latest score on or before date t is used. Scores from date t are traded at the price of the NEXT date (exec_lag=1) so a fly can never
 trade on a price it has not yet seen. Rebalances every `every` trading days.
 """
 from __future__ import annotations
@@ -24,9 +24,9 @@ def run_account(prices: pd.DataFrame, scores: pd.DataFrame, universe: Universe |
     for i, d in enumerate(dates):
         px = prices.iloc[i].to_dict()
         if i % every == 0 and i - exec_lag >= 0:
-            sd = dates[i - exec_lag]
-            if sd in scores.index:
-                rebalance(acct, d, scores.loc[sd], px, k=k, idle_etf=idle_etf)
+            j = scores.index.searchsorted(dates[i - exec_lag], side="right") - 1     # latest score at or before that date
+            if j >= 0:
+                rebalance(acct, d, scores.iloc[j], px, k=k, idle_etf=idle_etf)
         curve.append((d, acct.equity(px)))
     eq = pd.Series(dict(curve)).astype(float)
     return acct, eq
