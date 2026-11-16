@@ -17,15 +17,22 @@ def pick_top_k(scores: pd.Series, universe, k: int) -> list[str]:
     return list(s.sort_values(ascending=False, kind="mergesort").index[:k])
 
 
-def rebalance(acct, date, scores, prices, k: int = 20, idle_etf: str | None = None, reserve: float = 0.002, band: float = 0.25):
+def rebalance(acct, date, scores, prices, k: int = 20, idle_etf: str | None = None, reserve: float = 0.002, band: float = 0.25,
+              sell_rank: int | None = None):
     """One rebalance. `prices` is a ticker->price mapping for today. Returns the list of Fills made.
 
+    sell_rank: a stock already held is kept while its score rank is within sell_rank (default 2*k); new money goes to the best-ranked
+        names not yet held until k are owned. sell_rank=k gives the plain top-K with no hysteresis. This cuts turnover and fees.
     band: leave a holding alone if it is within +-band of its target value (saves fees on tiny trims).
     reserve: fraction of equity held back so fees never make a buy fail.
     """
     start = len(acct.log)
     acct.mark(prices)
-    want = [t for t in pick_top_k(scores, acct.universe, k) if _ok(prices.get(t))]
+    sell_rank = 2 * k if sell_rank is None else max(sell_rank, k)
+    ranked = [t for t in pick_top_k(scores, acct.universe, len(pd.Series(scores).dropna())) if _ok(prices.get(t))]
+    pos_rank = {t: i for i, t in enumerate(ranked)}
+    kept = [t for t in ranked if t in acct.pos and pos_rank[t] < sell_rank][:k]
+    want = kept + [t for t in ranked if t not in kept][: max(k - len(kept), 0)]
     equity = acct.equity()
     invest = equity * (1.0 - reserve)
     per = invest / max(len(want), 1) if want else 0.0

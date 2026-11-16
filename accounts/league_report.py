@@ -38,12 +38,12 @@ def equal_weight_benchmark(prices: pd.DataFrame) -> pd.Series:
     return START_CASH * (1 + r).cumprod()
 
 
-def account_report(data, score_dict: dict, v0: int, v1: int, k=20, every=21, cost_bps=10.0, idle_etf=None):
+def account_report(data, score_dict: dict, v0: int, v1: int, k=20, every=21, cost_bps=10.0, idle_etf=None, sell_rank=None):
     idxs = list(range(v0, v1))
     prices = prices_from_returns(data.fwd1, idxs)
     sc = scores_frame(score_dict, data, idxs)
     uni = Universe(stocks=prices.columns)
-    acct, eq = run_account(prices, sc, uni, k=k, every=every, cost_bps=cost_bps, idle_etf=idle_etf)
+    acct, eq = run_account(prices, sc, uni, k=k, every=every, cost_bps=cost_bps, idle_etf=idle_etf, sell_rank=sell_rank)
     m = metrics(eq, equal_weight_benchmark(prices))
     m.update(trades=len(acct.filled), rejected=len(acct.rejected), fees=acct.fees, final_equity=float(eq.iloc[-1]),
              positions=len(acct.pos))
@@ -61,13 +61,18 @@ def main():
     ap.add_argument("--k", type=int, default=20)
     ap.add_argument("--every", type=int, default=21)
     ap.add_argument("--cost-bps", type=float, default=10.0)
+    ap.add_argument("--sell-rank", type=int, default=None, help="keep a held stock while its rank is within this (default 2*k; = k means no hysteresis)")
     a = ap.parse_args()
     store = Store(a.root)
     cfg = store.load_config()
+    import time
+    t0 = time.time()
+    print("loading panel (same slow start as run_league, runs once)...", flush=True)
     data = Data(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"])
+    print(f"panel loaded in {time.time() - t0:.0f}s", flush=True)
     c, v0, v1 = data.round_geometry(a.round)
     print(f"round {a.round}: {data.dates[v0].date()} -> {data.dates[v1 - 1].date()}  "
-          f"(each fly: ${START_CASH:,.0f}, long-only, top {a.k}, rebalance every {a.every} days, {a.cost_bps:g} bps)\n")
+          f"(each fly: ${START_CASH:,.0f}, long-only, top {a.k}, rebalance every {a.every} days, {a.cost_bps:g} bps, sell rank {a.sell_rank or 2 * a.k})\n")
     dicts, rows = {}, []
     for aid in store.agent_ids():
         f = store.root / "rounds" / "scores" / f"r{a.round:02d}_{aid}.npz"
@@ -78,8 +83,9 @@ def main():
     if not dicts:
         raise SystemExit(f"no saved scores for round {a.round} in {store.root / 'rounds' / 'scores'}")
     dicts["COMMITTEE"] = committee_scores(list(dicts.values()))
-    for aid, d in dicts.items():
-        _, _, m = account_report(data, d, v0, v1, a.k, a.every, a.cost_bps)
+    for n, (aid, d) in enumerate(dicts.items(), 1):
+        print(f"  account {n}/{len(dicts)}: {aid}", flush=True)
+        _, _, m = account_report(data, d, v0, v1, a.k, a.every, a.cost_bps, sell_rank=a.sell_rank)
         m["id"] = aid
         m["ic"] = float(np.mean([rank_ic(d[i], data.day[i][2]) for i in d]))
         rows.append(m)

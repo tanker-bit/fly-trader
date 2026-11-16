@@ -15,7 +15,7 @@ from accounts.policy import rebalance
 
 
 def run_account(prices: pd.DataFrame, scores: pd.DataFrame, universe: Universe | None = None, k: int = 20, every: int = 21,
-                cost_bps: float = 10.0, idle_etf: str | None = None, exec_lag: int = 1, cash: float = START_CASH):
+                cost_bps: float = 10.0, idle_etf: str | None = None, exec_lag: int = 1, cash: float = START_CASH, sell_rank: int | None = None):
     dates = list(prices.index)
     if universe is None:
         universe = Universe(stocks=[c for c in prices.columns])
@@ -26,7 +26,7 @@ def run_account(prices: pd.DataFrame, scores: pd.DataFrame, universe: Universe |
         if i % every == 0 and i - exec_lag >= 0:
             j = scores.index.searchsorted(dates[i - exec_lag], side="right") - 1     # latest score at or before that date
             if j >= 0:
-                rebalance(acct, d, scores.iloc[j], px, k=k, idle_etf=idle_etf)
+                rebalance(acct, d, scores.iloc[j], px, k=k, idle_etf=idle_etf, sell_rank=sell_rank)
         curve.append((d, acct.equity(px)))
     eq = pd.Series(dict(curve)).astype(float)
     return acct, eq

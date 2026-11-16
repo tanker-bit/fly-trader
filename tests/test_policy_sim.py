@@ -28,7 +28,7 @@ def test_rebalance_long_only_and_sells_dropouts():
     px = {"A": 10.0, "B": 20.0, "C": 30.0, "D": 40.0}
     rebalance(a, "d1", pd.Series({"A": 4, "B": 3, "C": 2, "D": 1}), px, k=2)
     assert set(a.pos) == {"A", "B"} and a.cash >= 0 and not a.rejected
-    rebalance(a, "d2", pd.Series({"A": 1, "B": 2, "C": 4, "D": 3}), px, k=2)
+    rebalance(a, "d2", pd.Series({"A": 1, "B": 2, "C": 4, "D": 3}), px, k=2, sell_rank=2)
     assert set(a.pos) == {"C", "D"} and a.cash >= 0 and not a.rejected     # only ever sold what it held
 
 
@@ -58,3 +58,13 @@ def test_no_lookahead():
     a, _ = run_account(px, sc, k=5, every=21)
     first = a.filled[0]
     assert first.date == str(px.index[21])       # scores from day 20 traded at day 21's price
+
+
+def test_hysteresis_cuts_turnover_and_stays_long_only():
+    px, drift, t = synth(n=400)
+    rnd = np.random.default_rng(5)
+    noisy = pd.DataFrame(np.tile(drift, (len(px), 1)) + rnd.normal(0, 0.002, px.shape), px.index, t)
+    a0, _ = run_account(px, noisy, k=5, every=10, sell_rank=5)
+    a1, _ = run_account(px, noisy, k=5, every=10, sell_rank=15)
+    assert len(a1.filled) < len(a0.filled) and a1.fees < a0.fees
+    assert a1.cash >= 0 and not a1.rejected and len(a1.pos) <= 5
