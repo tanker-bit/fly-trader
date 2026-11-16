@@ -41,3 +41,16 @@ def test_scores_frame_shape():
     d, drift = fake_data()
     f = scores_frame({0: drift, 5: drift}, d, range(0, 10))
     assert f.shape == (2, 25)
+
+
+def test_random_control_is_noise_and_rules_hold():
+    from accounts.league_report import random_control, momentum_scores
+    d, drift = fake_data()
+    d.i_mom = 0
+    sd = {i: drift for i in range(0, 120, 5)}
+    r = random_control(d, sd, 0, 120, n=12, workers=1, k=5, every=10)
+    assert r.shape == (12,) and np.isfinite(r).all() and r.std() > 0
+    r2 = random_control(d, sd, 0, 120, n=12, workers=1, k=5, every=10)
+    assert np.allclose(r, r2)                       # seeded, reproducible
+    good = account_report(d, sd, 0, 120, k=5, every=10)[2]["total_return"]
+    assert good > np.percentile(r, 50)              # real signal beats typical noise
