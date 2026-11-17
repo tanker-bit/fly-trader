@@ -12,6 +12,7 @@ from scipy.stats import rankdata
 
 from env.features import feature_columns
 from experiments.backtest import MARKET_COLS
+from tournament.labels import load_sectors, make_labels
 
 HORIZON = 21
 GAP = 21
@@ -47,10 +48,14 @@ def rank_ic(s, y) -> float:
 class Data:
     """dates[i] / day[i] = (tickers, X, y21) for the i-th labelled date. The last `holdout` dates are never used by the league."""
 
-    def __init__(self, panel_path, train_days, val_days, holdout, min_stocks=10):
+    def __init__(self, panel_path, train_days, val_days, holdout, min_stocks=10, label="21", sectors=None):
         panel = load_panel(panel_path)
         self.feats = [c for c in feature_columns(panel) if c not in MARKET_COLS]
-        y = monthly_labels(panel)
+        if str(label) == "21" and not sectors:
+            y, self.gap = monthly_labels(panel), HORIZON          # exactly the original label and gap
+        else:
+            y, self.gap = make_labels(panel, label, sectors)
+        self.label = str(label)
         ok = y.notna()
         sub = panel.loc[ok, self.feats].copy()
         sub["_y"] = y[ok].to_numpy()
@@ -65,14 +70,20 @@ class Data:
         self.train_days, self.val_days, self.holdout = train_days, val_days, holdout
         self.i_mom, self.i_rev = self.feats.index("mom_12_1"), self.feats.index("ret_1")
 
+    @classmethod
+    def from_cfg(cls, cfg):
+        """Build from a league config. Old configs without `label` / `sectors` give the original 21-day, market-neutral label."""
+        sec = load_sectors(cfg["sectors"]) if cfg.get("sectors") else None
+        return cls(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"], label=cfg.get("label", "21"), sectors=sec)
+
     @property
     def n_usable(self):
         return len(self.dates) - self.holdout
 
     def round_geometry(self, r):
-        """(c, v0, v1): train on dates[..c]; validate on dates[v0:v1] with v0 = c + GAP."""
+        """(c, v0, v1): train on dates[..c]; validate on dates[v0:v1] with v0 = c + gap (gap = longest label horizon, 21 by default)."""
         c = self.train_days - 1 + r * self.val_days
-        return c, c + GAP, c + GAP + self.val_days
+        return c, c + self.gap, c + self.gap + self.val_days
 
     def round_valid(self, r):
         return self.round_geometry(r)[2] <= self.n_usable

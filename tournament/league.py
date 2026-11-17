@@ -92,7 +92,7 @@ def train_through(ag, rec, data, upto, cfg):
 def init_worker(cfg):
     G["cfg"] = cfg
     G["store"] = Store(cfg["root"])
-    G["data"] = Data(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"])
+    G["data"] = Data.from_cfg(cfg)
 
 
 def run_agent_round(aid, r):
@@ -121,8 +121,8 @@ def run_agent_final(aid):
     rec = store.load_agent(aid)
     h0 = data.n_usable
     ag = load_agent_obj(rec, store, cfg, data)
-    train_through(ag, rec, data, h0 - 1 - GAP, cfg)
-    return aid, {i: fly_scores(ag, data.day[i][1]) for i in range(h0, len(data.dates), GAP)}
+    train_through(ag, rec, data, h0 - 1 - data.gap, cfg)
+    return aid, {i: fly_scores(ag, data.day[i][1]) for i in range(h0, len(data.dates), data.gap)}
 
 
 def _map(fn, jobs, cfg, workers):
@@ -230,7 +230,7 @@ def leaderboard_text(store, data, cfg, r, controls, keep_ids, committee=None):
     rows = [a for a in (store.load_agent(i) for i in store.agent_ids())
             if a["history"] and a["history"][-1]["round"] == r]
     rows.sort(key=lambda a: -sel_score(a))
-    n_eff = cfg["val_days"] / GAP
+    n_eff = cfg["val_days"] / data.gap
     sd = float(np.mean([a["history"][-1]["sd"] for a in rows])) if rows else 0.0
     n_tried = sum(1 for i in store.agent_ids() if store.load_agent(i)["born_round"] <= r)   # agents scored up to this round
     bar = sd * np.sqrt(2 * np.log(max(n_tried, 2))) / np.sqrt(n_eff)
@@ -314,8 +314,8 @@ def run_final(store, cfg, data, workers, force=False):
     h0 = data.n_usable
     agents = sorted(store.alive(), key=lambda a: -sel_score(a))[:cfg["keep"]]
     print(f"FINAL HOLDOUT {data.dates[h0].date()} -> {data.dates[-1].date()}  ({len(data.dates) - h0} days; "
-          f"decisions every {GAP} days). Scoring {len(agents)} agents.", flush=True)
-    idxs = list(range(h0, len(data.dates), GAP))
+          f"decisions every {data.gap} days). Scoring {len(agents)} agents.", flush=True)
+    idxs = list(range(h0, len(data.dates), data.gap))
     days = data.dates[h0:]
 
     def frame(by_idx):
@@ -325,7 +325,7 @@ def run_final(store, cfg, data, workers, force=False):
         return f
 
     signals = {}
-    cs = control_scores(data, idxs, h0 - 1 - GAP, np.random.default_rng([cfg["seed"], 999]))
+    cs = control_scores(data, idxs, h0 - 1 - data.gap, np.random.default_rng([cfg["seed"], 999]))
     for k, v in cs.items():
         signals[k] = frame(v)
     signals["fly untrained (default)"] = frame(untrained_control(data, cfg, idxs))
@@ -339,7 +339,7 @@ def run_final(store, cfg, data, workers, force=False):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         report(signals, data.fwd1.reindex(days), data.y_frame(range(h0, len(data.dates))).reindex(days),
-               rebalances=(GAP,))
+               rebalances=(data.gap,))
     out = ("=== FINAL HOLDOUT, monthly rebalance, long-short, net Sharpe at 0/5/10/20 bps ===\n" + buf.getvalue() +
            f"\nVariants tried before this: {store.load_state()['trials']}. IC t-stats use non-overlapping monthly decisions "
            f"({len(idxs)} of them): treat |t| < 2 as no evidence.")

@@ -108,7 +108,8 @@ def forward_return_21(close: pd.DataFrame, member: pd.DataFrame | None = None) -
     return r, r.sub(base.mean(axis=1), axis=0)
 
 
-def build_panel(close, volume, market=None, fundamentals=None, member=None, min_fund=0, horizon21=False) -> pd.DataFrame:
+def build_panel(close, volume, market=None, fundamentals=None, member=None, min_fund=0, horizon21=False,
+                fund_flag=False) -> pd.DataFrame:
     """Long table indexed by (date, ticker): feature columns + fwd_ret + fwd_excess (+ fwd_ret_21 / fwd_excess_21).
 
     Old call build_panel(close, volume, market) behaves exactly as before. New optional arguments:
@@ -117,6 +118,8 @@ def build_panel(close, volume, market=None, fundamentals=None, member=None, min_
       member            bool dates x tickers: S&P 500 (or other) membership on that date; non-members get no row
       min_fund          keep a row only if at least this many fundamentals are known; unknown ones are set to 0 (mid rank)
       horizon21         also store the 21-day forward label (excluded from features by feature_columns)
+      fund_flag         add a feature `fund_known` in [-1, 1] = share of the 11 fundamentals known on that row (before unknowns
+                        are set to 0), so a hybrid panel (min_fund=0) tells the fly when the fundamentals are real vs filler
     """
     close, volume = close.sort_index(), volume.reindex_like(close)
     if member is not None:
@@ -147,7 +150,11 @@ def build_panel(close, volume, market=None, fundamentals=None, member=None, min_
     # keep rows where every price/market feature exists; the label may be NaN only on the final day
     panel = panel.dropna(subset=feature_cols)
     if fund_cols:
-        panel = panel[panel[fund_cols].notna().sum(axis=1) >= min_fund]
+        known = panel[fund_cols].notna().sum(axis=1)
+        keep = known >= min_fund
+        panel, known = panel[keep].copy(), known[keep]
+        if fund_flag:
+            panel["fund_known"] = known / len(fund_cols) * 2.0 - 1.0
         panel[fund_cols] = panel[fund_cols].fillna(0.0)
     return panel
 

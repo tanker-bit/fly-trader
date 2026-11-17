@@ -24,7 +24,7 @@ def main():
     a = ap.parse_args()
     store = Store(a.root)
     cfg = store.load_config()
-    data = Data(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"])
+    data = Data.from_cfg(cfg)
     c, v0, v1 = data.round_geometry(a.round)
     sdir = store.root / "rounds" / "scores"
     sdir.mkdir(parents=True, exist_ok=True)

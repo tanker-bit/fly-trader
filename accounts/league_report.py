@@ -106,7 +106,7 @@ def main():
     cfg = store.load_config()
     t0 = time.time()
     print("loading panel (same slow start as run_league, runs once)...", flush=True)
-    data = Data(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"])
+    data = Data.from_cfg(cfg)
     print(f"panel loaded in {time.time() - t0:.0f}s", flush=True)
     c, v0, v1 = data.round_geometry(a.round)
     print(f"round {a.round}: {data.dates[v0].date()} -> {data.dates[v1 - 1].date()}  "
