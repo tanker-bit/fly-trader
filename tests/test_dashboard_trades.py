@@ -73,3 +73,27 @@ def test_league_index_matches_data_for_a_blended_label(tmp_path):
     assert [x for x, _ in index] == list(d.dates)
     assert all(np.array_equal(t, d.day[i][0]) for i, (_, t) in enumerate(index))
     assert fwd1.shape[0] == len(d.dates) and np.allclose(fwd1.to_numpy(), d.fwd1.to_numpy(), equal_nan=True)
+
+
+def test_decisions_carry_cash_equity_and_positions():
+    index, fwd1, scores = make()
+    dec = replay_trades(scores, index, fwd1, "f1", 0, k=5, every=21)
+    first = dec[0]
+    assert first.action == "BUY" and first.cash < 1_000_000 and first.equity <= 1_000_000 + 1     # one buy: fee only
+    assert abs(first.equity - 1_000_000) < 0.002 * 1_000_000                                       # equity ~ start (fees, rounding)
+    assert [p[0] for p in first.positions] == [first.ticker]
+    last_buy_day = [d for d in dec if d.when == dec[0].when]
+    assert len(last_buy_day[-1].positions) == 5                                                     # k names after the first rebalance
+    for d in dec:
+        assert d.cash >= -1e-6
+        assert abs(d.equity - (d.cash + sum(p[3] for p in d.positions))) < 1e-6
+        assert list(d.positions) == sorted(d.positions, key=lambda r: -r[3])
+
+
+def test_sells_reduce_positions_and_cash_matches_fills():
+    index, fwd1, scores = make(n_days=140)
+    dec = replay_trades(scores, index, fwd1, "f1", 0, k=5, every=21)
+    sells = [d for d in dec if d.action == "SELL"]
+    assert sells
+    for d in sells:
+        assert d.cash > 0

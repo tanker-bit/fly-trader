@@ -8,10 +8,12 @@ SILENT = constant score (dead circuit), as before; no account is run
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
-from accounts.instruments import Universe
+from accounts.instruments import Universe, START_CASH
 from accounts.league_report import prices_from_returns
 from accounts.sim import run_account
 from dashboard.state import Decision
@@ -32,33 +34,66 @@ def _score_of(sc: pd.DataFrame, date, ticker) -> float:
     return float(v) if v is not None and np.isfinite(v) else 0.0
 
 
+@dataclass
+class TradeDecision(Decision):
+    """A Decision that also carries the account right after it: cash, equity (cash + holdings at that day's prices) and the
+    positions [(ticker, shares, price, value, pnl_fraction)] sorted by value. The scene ignores the extras; the HUD shows them."""
+    cash: float = START_CASH
+    equity: float = START_CASH
+    positions: tuple = ()
+
+
+def _snapshot(held, basis, cash, prices_row):
+    pos = []
+    for t, sh in held.items():
+        px = prices_row.get(t)
+        px = float(px) if px is not None and np.isfinite(px) else 0.0
+        avg = basis[t] / sh if sh > 0 else 0.0
+        pos.append((t, sh, px, sh * px, (px / avg - 1.0) if avg > 0 and px > 0 else 0.0))
+    pos.sort(key=lambda r: -r[3])
+    return cash + sum(r[3] for r in pos), tuple(pos)
+
+
 def replay_trades(scores: dict, index, fwd1: pd.DataFrame, agent: str, rnd: int, k: int = 20, every: int = 21,
                   cost_bps: float = 10.0, sell_rank=None) -> list:
-    """{date_idx: score array} -> chronological [Decision] from the account's real fills (BUY/SELL) plus a HOLD per rebalance."""
+    """{date_idx: score array} -> chronological [TradeDecision] from the account's real fills (BUY/SELL) plus a HOLD per rebalance.
+    Each decision carries the cash, equity and positions right after it."""
     idxs = [i for i in sorted(scores) if i < len(index)]
     if not idxs:
         return []
     if all(np.nanstd(scores[i]) < 1e-9 for i in idxs):
-        return [Decision(str(index[i][0].date()), "", "SILENT", float(np.nanmean(scores[i])), agent, rnd) for i in idxs]
+        return [TradeDecision(str(index[i][0].date()), "", "SILENT", float(np.nanmean(scores[i])), agent, rnd) for i in idxs]
     win = list(range(idxs[0], idxs[-1] + 1))
-    prices = prices_from_returns(fwd1, win)
+    prices = prices_from_returns(fwd1, win).ffill()
     sc = pd.DataFrame({index[i][0]: pd.Series(np.asarray(scores[i], float), index=index[i][1]) for i in idxs}).T.sort_index()
     acct, _ = run_account(prices, sc, Universe(stocks=prices.columns), k=k, every=every, cost_bps=cost_bps, sell_rank=sell_rank)
-    out, held, by_day = [], {}, {}
+    out, held, basis, cash, by_day = [], {}, {}, START_CASH, {}
     for f in acct.filled:
         by_day.setdefault(pd.Timestamp(f.date), []).append(f)
     for day in sorted(by_day):
+        row = prices.loc[day].to_dict() if day in prices.index else {}
         traded = set()
         for f in by_day[day]:
-            held[f.ticker] = held.get(f.ticker, 0.0) + (f.shares if f.side == "BUY" else -f.shares)
-            if held[f.ticker] <= 1e-9:
-                held.pop(f.ticker, None)
+            if f.side == "BUY":
+                held[f.ticker] = held.get(f.ticker, 0.0) + f.shares
+                basis[f.ticker] = basis.get(f.ticker, 0.0) + f.shares * f.price
+                cash -= f.shares * f.price + f.fee
+            else:
+                old = held.get(f.ticker, 0.0)
+                basis[f.ticker] = basis.get(f.ticker, 0.0) * (1.0 - f.shares / old) if old > 0 else 0.0
+                held[f.ticker] = old - f.shares
+                cash += f.shares * f.price - f.fee
+                if held[f.ticker] <= 1e-9:
+                    held.pop(f.ticker, None)
+                    basis.pop(f.ticker, None)
             traded.add(f.ticker)
-            out.append(Decision(str(day.date()), f.ticker, f.side, _score_of(sc, day, f.ticker), agent, rnd))
+            eq, pos = _snapshot(held, basis, cash, row)
+            out.append(TradeDecision(str(day.date()), f.ticker, f.side, _score_of(sc, day, f.ticker), agent, rnd, cash, eq, pos))
         keep = [t for t in held if t not in traded]
         if keep:
             t = max(keep, key=lambda x: _score_of(sc, day, x))
-            out.append(Decision(str(day.date()), t, "HOLD", _score_of(sc, day, t), agent, rnd))
+            eq, pos = _snapshot(held, basis, cash, row)
+            out.append(TradeDecision(str(day.date()), t, "HOLD", _score_of(sc, day, t), agent, rnd, cash, eq, pos))
     return out
 
 
