@@ -1633,7 +1633,7 @@ def render_metrics(cv: Canvas, lines, scroll: float, live: bool):
         cv.text(x + 4, y + 25 + i * METRIC_ROW_H, row, col, 2)
 
 
-STATE_STATUS = {"BUY": "LONG ORDER {tk}", "SELL": "COVER ORDER {tk}", "HOLD": "TRACKING MARKET FLOW {tk}",
+STATE_STATUS = {"BUY": "BUY ORDER {tk}", "SELL": "SELL ORDER {tk}", "HOLD": "TRACKING MARKET FLOW {tk}",
                 "IDLE": "STANDING BY", "SILENT": "AGENT SILENT - CULL FILTER"}
 
 
@@ -2619,21 +2619,31 @@ RESEARCH_STATUS = ("SEARCHING SEC EDGAR...", "DOWNLOADING SEC XBRL...", "PARSING
 def format_log(action: str, ticker: str, score: float, agent: str = ""):
     """(rgb 0-255, text) log line in the exact wording of the spec."""
     if action == "BUY":
-        return UI_GREEN, f"[FLY BUY] Entered Long Position on {ticker} - MBON Hz: {score:+.1f}"
+        return UI_GREEN, f"[FLY BUY] Bought {ticker} - MBON Hz: {score:+.1f}"
     if action == "SELL":
-        return UI_RED, f"[FLY SELL] Covered Short Position on {ticker} - MBON Hz: {score:+.1f}"
+        return UI_RED, f"[FLY SELL] Sold {ticker} from holdings - MBON Hz: {score:+.1f}"
     if action == "HOLD":
-        return UI_CYAN, f"[FLY HOLD] Defending Position on {ticker}"
+        return UI_CYAN, f"[FLY HOLD] Holding {ticker}"
     return UI_AMBER, f"[FLY SILENT] {agent}: constant score, circuit dead - flagged for culling"
 
 
-_HOLD_RE = re.compile(r"^\[FLY HOLD\].*? on (\S+)\s*$")
+_HOLD_RE = re.compile(r"^\[FLY HOLD\].*? (?:on|holding on) (\S+)\s*$")
+_BUY_RE = re.compile(r"^\[FLY BUY\] Entered Long Position on (\S+)(.*)$")
+_SELL_RE = re.compile(r"^\[FLY SELL\] Covered Short Position on (\S+)(.*)$")
 
 
 def spec_text(text: str) -> str:
-    """Your FlyAnimator words HOLD as '... - Maintaining neutral holding on X'; the spec wants 'Defending Position on X'."""
+    """The accounts are long-only (no shorting, no calls), so the log says what really happens: a BUY is a purchase, a SELL sells
+    shares the fly owns, a HOLD keeps a position. Older wordings ('Entered Long Position', 'Covered Short Position',
+    'Defending Position ... Maintaining neutral holding on X') coming from your FlyAnimator are rewritten to the same text."""
+    m = _BUY_RE.match(text)
+    if m:
+        return f"[FLY BUY] Bought {m.group(1)}{m.group(2)}"
+    m = _SELL_RE.match(text)
+    if m:
+        return f"[FLY SELL] Sold {m.group(1)} from holdings{m.group(2)}"
     m = _HOLD_RE.match(text)
-    return f"[FLY HOLD] Defending Position on {m.group(1)}" if m else text
+    return f"[FLY HOLD] Holding {m.group(1)}" if m else text
 
 
 def _smooth(x: float) -> float:
@@ -3845,7 +3855,7 @@ def _selftest_screen_panels(check) -> bool:
     tkref = Canvas(SCREEN_W, SCREEN_H, (0, 0, 0))
     tkref.text(STATUS_RECT[0] + 8, STATUS_RECT[1] + 10, "TRACKING MARKET FLOW AAPL"[:(STATUS_RECT[2] - 16) // 12], (255, 255, 255), 2)
     check("HOLD: status panel says tracking market flow (and no crawl)", ((tkref.px[:, :, 0] == 255) <= (b.canvas.px == np.array(COL_SCR_TEXT, dtype=np.uint8)).all(2)).all())
-    for st, word in (("BUY", "LONG ORDER AAPL"), ("SELL", "COVER ORDER AAPL")):
+    for st, word in (("BUY", "BUY ORDER AAPL"), ("SELL", "SELL ORDER AAPL")):
         c = shot(ViewModel(state=st, ticker="AAPL", research_lines=vm.research_lines), 0.0)
         rr = Canvas(SCREEN_W, SCREEN_H, (0, 0, 0)); rr.text(STATUS_RECT[0] + 8, STATUS_RECT[1] + 10, word, (255, 255, 255), 2)
         col = np.array(COL_CANDLE_UP if st == "BUY" else COL_CANDLE_DN, dtype=np.uint8)
@@ -4185,7 +4195,7 @@ def _selftest_log_zzz(check) -> bool:
     check("LogContent: a new line redraws", lc.update(NS(log=log + [(green, "new")])) is True)
     sim = SimFeed(start_thread=False)
     sim.log.append(format_log("BUY", "NVDA", 1.5, "a"))
-    check("log: the sim feed's own wording renders", "[FLY BUY] Entered Long Position on" in log_rows(sim.view().log)[0][1] and "NVDA" in "".join(r[1] for r in log_rows(sim.view().log)))
+    check("log: the sim feed's own wording renders", "[FLY BUY] Bought" in log_rows(sim.view().log)[0][1] and "NVDA" in "".join(r[1] for r in log_rows(sim.view().log)))
     # Zzz
     check("zzz: nothing when awake / junk", zzz_params(0.0) == [] and zzz_params(-1) == [] and zzz_params(None) == [] and zzz_params(float("nan")) == [])
     check("zzz: one Z at first, then up to three", len(zzz_params(0.1)) == 1 and len(zzz_params(1.0)) == 2 and len(zzz_params(5.0)) == ZZZ_COUNT)
@@ -4673,10 +4683,13 @@ def _selftest_bridge(check) -> bool:
     check("HOLD has no reach/flash", envelopes("HOLD", 0.5) == (0.0, 0.0))
     check("HOLD log rewritten to spec",
           spec_text("[FLY HOLD] Defending Position - Maintaining neutral holding on AAPL")
-          == "[FLY HOLD] Defending Position on AAPL")
-    check("BUY log untouched", spec_text("[FLY BUY] Entered Long Position on X - MBON Hz: +1.0").startswith("[FLY BUY]"))
+          == "[FLY HOLD] Holding AAPL")
+    check("old BUY/SELL wording rewritten to what a long-only account does",
+          spec_text("[FLY BUY] Entered Long Position on X - MBON Hz: +1.0") == "[FLY BUY] Bought X - MBON Hz: +1.0"
+          and spec_text("[FLY SELL] Covered Short Position on X - MBON Hz: -1.0") == "[FLY SELL] Sold X from holdings - MBON Hz: -1.0"
+          and spec_text("[FLY BUY] Bought X - MBON Hz: +1.0") == "[FLY BUY] Bought X - MBON Hz: +1.0")
     check("format_log wording",
-          format_log("SELL", "ZTS", -2.04)[1] == "[FLY SELL] Covered Short Position on ZTS - MBON Hz: -2.0")
+          format_log("SELL", "ZTS", -2.04)[1] == "[FLY SELL] Sold ZTS from holdings - MBON Hz: -2.0")
 
     # deterministic simulator: drive producer + renderer by hand, no threads
     s = SimFeed(seed=3, start_thread=False)
@@ -4730,7 +4743,7 @@ def _selftest_bridge(check) -> bool:
                 b.update(0.05)
             vm = b.view()
             check("real bridge: BUY state", vm.state == "BUY" and vm.ticker == "AAPL")
-            check("real bridge: BUY log line", any(t.startswith("[FLY BUY] Entered Long Position on AAPL") for _, t in vm.log))
+            check("real bridge: BUY log line", any(t.startswith("[FLY BUY] Bought AAPL") for _, t in vm.log))
             check("real bridge: BUY reach/flash present", vm.reach > 0 and vm.flash > 0)
             check(f"real bridge: animator native={b.native} -> lever_buy matches",
                   (abs(vm.lever_buy - b.app.animator.pose().lever_buy) < 0.2) if b.native else (vm.lever_buy == vm.reach))
