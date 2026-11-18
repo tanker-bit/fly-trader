@@ -60,3 +60,34 @@ def replay_trades(scores: dict, index, fwd1: pd.DataFrame, agent: str, rnd: int,
             t = max(keep, key=lambda x: _score_of(sc, day, x))
             out.append(Decision(str(day.date()), t, "HOLD", _score_of(sc, day, t), agent, rnd))
     return out
+
+
+def league_index(cfg: dict, min_stocks: int = 10):
+    """([(date, tickers)], fwd1) aligned EXACTLY with tournament.data.Data for this league config, so a saved score array d<N> maps to
+    index[N]. The league's label can be a blend (e.g. 5+21+63) with sector neutrality, which drops different stocks than the plain
+    21-day label does, so the old date_ticker_index (21-day label only) does not line up for such leagues. Only fwd_ret (and the
+    21-day column when it exists) are read, so this is light enough for the dashboard's background thread."""
+    from tournament.data import HORIZON, load_panel, monthly_labels
+    from tournament.labels import load_sectors, make_labels
+
+    path, label = cfg["panel"], str(cfg.get("label", "21"))
+    if str(path).endswith(".pkl"):
+        panel = load_panel(path)
+    else:
+        cols = ["fwd_ret"]
+        try:
+            import pyarrow.parquet as pq
+            if "fwd_excess_21" in pq.read_schema(path).names:
+                cols.append("fwd_excess_21")
+        except Exception:
+            pass
+        panel = pd.read_parquet(path, columns=cols)
+    sectors = load_sectors(cfg["sectors"]) if cfg.get("sectors") else None
+    y = monthly_labels(panel) if (label == "21" and not sectors) else make_labels(panel, label, sectors)[0]
+    y = y[y.notna()]
+    index = []
+    for d, g in y.groupby(level="date"):
+        if len(g) >= min_stocks:
+            index.append((d, g.index.get_level_values("ticker").to_numpy()))
+    fwd1 = panel["fwd_ret"].unstack("ticker").reindex([d for d, _ in index])
+    return index, fwd1

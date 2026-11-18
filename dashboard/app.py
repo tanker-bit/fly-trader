@@ -48,13 +48,18 @@ class DashboardApp:
         if not self.panel:
             return
         try:
-            idx = state.date_ticker_index(self.panel)
-            self.n_universe = len(idx[-1][1]) if idx else 0
+            idx = None
             if trades is not None:
-                try:
-                    self.fwd1 = trades.load_fwd1(self.panel, [d for d, _ in idx])
+                try:                                # aligned with the league's own label (blends, sector-neutral)
+                    from tournament.store import Store
+                    cfg = Store(self.league_root).load_config()
+                    cfg["panel"] = self.panel
+                    idx, self.fwd1 = trades.league_index(cfg)
                 except Exception:
-                    self.fwd1 = None                # no return column: keep the old replay
+                    idx, self.fwd1 = None, None     # cannot align: old replay
+            if idx is None:
+                idx = state.date_ticker_index(self.panel)
+            self.n_universe = len(idx[-1][1]) if idx else 0
             self.index = idx                        # set last, so the replay never starts before fwd1 is ready
         except Exception as e:
             self.index_error = str(e)

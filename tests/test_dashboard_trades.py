@@ -57,3 +57,19 @@ def test_load_fwd1_reads_only_returns(tmp_path):
     long.assign(other=1.0).to_pickle(f)
     got = load_fwd1(f, [d for d, _ in index])
     assert got.shape == fwd1.shape and np.allclose(got.to_numpy(), fwd1.to_numpy())
+
+
+def test_league_index_matches_data_for_a_blended_label(tmp_path):
+    from dashboard.trades import league_index
+    from tests.test_labels import make_panel
+    from tournament.data import Data
+    p = make_panel(900)
+    p.iloc[::7, p.columns.get_loc("fwd_ret")] = np.nan          # holes so the labelled stocks differ per date
+    f = tmp_path / "p.pkl"
+    p.to_pickle(f)
+    cfg = dict(panel=str(f), train_days=150, val_days=60, holdout=80, label="5+21+63")
+    index, fwd1 = league_index(cfg)
+    d = Data.from_cfg(cfg)
+    assert [x for x, _ in index] == list(d.dates)
+    assert all(np.array_equal(t, d.day[i][0]) for i, (_, t) in enumerate(index))
+    assert fwd1.shape[0] == len(d.dates) and np.allclose(fwd1.to_numpy(), d.fwd1.to_numpy(), equal_nan=True)
