@@ -8,6 +8,11 @@ import time
 from collections import deque
 
 from dashboard import state
+
+try:                                    # real account fills; if it cannot import, the old score replay is used
+    from dashboard import trades
+except Exception:                       # pragma: no cover
+    trades = None
 from dashboard.scene import FlyAnimator, View
 
 STATUS = ("SEARCHING SEC EDGAR...", "DOWNLOADING SEC XBRL...", "PARSING TICKER {tk}...")
@@ -20,6 +25,8 @@ class DashboardApp:
         self.animator = FlyAnimator()
         self.snap = state.snapshot(league_root, sec_root)
         self.index = None                       # [(date, tickers)] once the panel labels are read
+        self.fwd1 = None                        # next-day returns for the real-trade replay (None -> old score replay)
+        self.real = False                       # True while the decisions come from real account fills
         self.n_universe = 0
         self.index_error = None
         self.cik = {}
@@ -43,7 +50,12 @@ class DashboardApp:
         try:
             idx = state.date_ticker_index(self.panel)
             self.n_universe = len(idx[-1][1]) if idx else 0
-            self.index = idx
+            if trades is not None:
+                try:
+                    self.fwd1 = trades.load_fwd1(self.panel, [d for d, _ in idx])
+                except Exception:
+                    self.fwd1 = None                # no return column: keep the old replay
+            self.index = idx                        # set last, so the replay never starts before fwd1 is ready
         except Exception as e:
             self.index_error = str(e)
 
@@ -79,9 +91,16 @@ class DashboardApp:
             sc = state.load_scores(self.league_root, r, aid)
             if sc:
                 if self.src != (aid, r):
-                    dec = state.replay_decisions(sc, self.index, aid, r)
+                    dec, real = None, False
+                    if self.fwd1 is not None:
+                        try:
+                            dec, real = trades.replay_trades(sc, self.index, self.fwd1, aid, r), True
+                        except Exception:
+                            dec = None              # fall back rather than show nothing
+                    if dec is None:
+                        dec = state.replay_decisions(sc, self.index, aid, r)
                     with self._lock:
-                        self.decisions, self.cursor, self.src = dec, 0, (aid, r)
+                        self.decisions, self.cursor, self.src, self.real = dec, 0, (aid, r), real
                 return
 
     # ------------------------------------------------------------ foreground (cheap)
@@ -120,7 +139,8 @@ class DashboardApp:
         if not self.src:
             return "NO SAVED SCORES YET (agents from rounds before v6 saved none)"
         d = self.last_decision
-        return f"REPLAY r{self.src[1]:02d} {self.src[0]} {d.when if d else ''}  (saved out-of-sample scores, no real trades)"
+        what = "real long-only account fills, simulated $1M, no real money" if self.real else "saved out-of-sample scores, no real trades"
+        return f"REPLAY r{self.src[1]:02d} {self.src[0]} {d.when if d else ''}  ({what})"
 
     def view(self):
         s = self.snap
