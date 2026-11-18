@@ -52,3 +52,12 @@ def test_uses_the_leagues_validation_dates_only():
     rule_ics(d, [1], score_every=4, rules=["-ma50_dist"])
     c, v0, v1 = d.round_geometry(1)
     assert sorted(set(seen)) == list(range(v0, v1, 4))     # touches no other date (ridge not requested here)
+
+
+def test_summarize_paired_t_sign():
+    import pandas as pd
+    from experiments.rules_vs_flies import summarize
+    t = pd.DataFrame({"fly mean": [0.02, 0.03, 0.01, 0.04], "committee": [0.02] * 4, "-ma50_dist": [0.05, 0.06, 0.04, 0.07]})
+    s = summarize(t, ["-ma50_dist"])
+    assert s.loc["-ma50_dist", "fly_minus_this"] < 0 and s.loc["-ma50_dist", "paired_t"] < 0
+    assert s.loc["fly mean", "rounds_positive"] == 4
