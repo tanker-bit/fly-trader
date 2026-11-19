@@ -158,6 +158,11 @@ class DashboardApp:
         cash, eq, pos = self.account or (START_CASH, START_CASH, [])
         return dict(cash=cash, equity=eq, positions=list(pos), start_cash=START_CASH)
 
+    def _date_header(self):
+        """The trading date of the decision being shown (ISO), so the monitors can print dd/mm/yyyy."""
+        d = self.last_decision
+        return {"trade_date": d.when} if d is not None and getattr(d, "when", "") else {}
+
     def replay_label(self):
         if self.index is None:
             return "LOADING PANEL INDEX..." if not self.index_error else "PANEL INDEX FAILED: " + self.index_error[:60]
@@ -175,5 +180,6 @@ class DashboardApp:
         hdr = dict(round=s.round, universe=self.n_universe or s.n_universe, top_id=s.top.id if s.top else None,
                    top_ic=s.top.avg3 if s.top else None, ridge_ic=s.ridge_avg3, untrained_ic=s.untrained_avg3, mode=s.mode)
         hdr.update(self._account_header())
+        hdr.update(self._date_header())
         return View(header=hdr, pose=self.animator.pose(), log=list(self.animator.log), tape=list(self.tape),
                     research_lines=lines, research_status=status, clock=self.clock, replay_label=self.replay_label())

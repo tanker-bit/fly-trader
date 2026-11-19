@@ -95,3 +95,15 @@ def test_no_account_header_without_real_trades(monkeypatch):
     a.index, a.account = index, None
     a._refresh_replay(a.snap)
     assert not a.real and a._account_header() == {}
+
+
+def test_date_header_follows_the_last_decision(monkeypatch):
+    app = load_app(monkeypatch)
+    index, fwd1, sc = data()
+    monkeypatch.setattr(app.state, "load_scores", lambda root, r, aid: sc)
+    a = fake_app(app, monkeypatch, fwd1)
+    a.index, a.account = index, None
+    assert a._date_header() == {}                                   # nothing played yet: the monitors show --/--/----
+    a._refresh_replay(a.snap)
+    a.last_decision = a.decisions[0]
+    assert a._date_header() == {"trade_date": a.decisions[0].when} and len(a.decisions[0].when) == 10
