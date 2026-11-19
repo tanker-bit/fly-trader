@@ -65,3 +65,33 @@ def test_a_failing_account_run_falls_back(monkeypatch):
     a.index = index
     a._refresh_replay(a.snap)
     assert not a.real and a.decisions
+
+
+def test_account_header_follows_the_trades(monkeypatch):
+    app = load_app(monkeypatch)
+    index, fwd1, sc = data()
+    monkeypatch.setattr(app.state, "load_scores", lambda root, r, aid: sc)
+    a = fake_app(app, monkeypatch, fwd1)
+    a.index, a.account = index, None
+    a._refresh_replay(a.snap)
+    assert a.real
+    h0 = a._account_header()
+    assert h0["equity"] == 1_000_000.0 and h0["cash"] == 1_000_000.0 and h0["positions"] == []      # before the first trade
+    buy = next(d for d in a.decisions if d.action == "BUY")
+    a._apply_account(buy)
+    h1 = a._account_header()
+    assert h1["cash"] < 1_000_000.0 and len(h1["positions"]) == 1 and h1["positions"][0][0] == buy.ticker
+    sells = [d for d in a.decisions if d.action == "SELL"]
+    if sells:
+        a._apply_account(sells[0])
+        assert a._account_header()["cash"] == sells[0].cash
+
+
+def test_no_account_header_without_real_trades(monkeypatch):
+    app = load_app(monkeypatch)
+    index, _, sc = data()
+    monkeypatch.setattr(app.state, "load_scores", lambda root, r, aid: sc)
+    a = fake_app(app, monkeypatch, None)
+    a.index, a.account = index, None
+    a._refresh_replay(a.snap)
+    assert not a.real and a._account_header() == {}

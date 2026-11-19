@@ -9,6 +9,11 @@ from collections import deque
 
 from dashboard import state
 
+try:
+    from accounts.instruments import START_CASH
+except Exception:                       # pragma: no cover
+    START_CASH = 1_000_000.0
+
 try:                                    # real account fills; if it cannot import, the old score replay is used
     from dashboard import trades
 except Exception:                       # pragma: no cover
@@ -34,6 +39,7 @@ class DashboardApp:
         self.decisions, self.cursor, self.src = [], 0, None     # replay source: (agent, round)
         self.tape = deque(maxlen=12)
         self.last_decision = None
+        self.account = None                     # (cash, equity, positions) right after the last real trade
         self.paused = False
         self.clock = 0.0
         self.quit = False
@@ -106,6 +112,7 @@ class DashboardApp:
                         dec = state.replay_decisions(sc, self.index, aid, r)
                     with self._lock:
                         self.decisions, self.cursor, self.src, self.real = dec, 0, (aid, r), real
+                        self.account = None             # a new replay starts from the $1,000,000 start state
                 return
 
     # ------------------------------------------------------------ foreground (cheap)
@@ -134,9 +141,22 @@ class DashboardApp:
             if d is not None:
                 a.push(d)
                 self.last_decision = d
+                self._apply_account(d)
                 if d.action != "SILENT":
                     self.tape.append((d.ticker, d.score))
         a.update(dt)
+
+    def _apply_account(self, d):
+        """Remember the account as it is right after this decision (only real-trade decisions carry one)."""
+        if self.real and hasattr(d, "equity"):
+            self.account = (d.cash, d.equity, list(d.positions))
+
+    def _account_header(self):
+        """Header keys for the money panel: cash, equity, positions. Empty when the decisions are not real trades (panel stays hidden)."""
+        if not self.real:
+            return {}
+        cash, eq, pos = self.account or (START_CASH, START_CASH, [])
+        return dict(cash=cash, equity=eq, positions=list(pos), start_cash=START_CASH)
 
     def replay_label(self):
         if self.index is None:
@@ -154,5 +174,6 @@ class DashboardApp:
         status = STATUS[int(self.clock * 1.2) % 3].format(tk=tk)
         hdr = dict(round=s.round, universe=self.n_universe or s.n_universe, top_id=s.top.id if s.top else None,
                    top_ic=s.top.avg3 if s.top else None, ridge_ic=s.ridge_avg3, untrained_ic=s.untrained_avg3, mode=s.mode)
+        hdr.update(self._account_header())
         return View(header=hdr, pose=self.animator.pose(), log=list(self.animator.log), tape=list(self.tape),
                     research_lines=lines, research_status=status, clock=self.clock, replay_label=self.replay_label())
