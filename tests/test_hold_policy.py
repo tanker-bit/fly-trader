@@ -25,6 +25,9 @@ def const_scores(px, order):
 
 
 def run(px, sc, **kw):
+    kw.setdefault("trail", None)                    # the older tests isolate one rule at a time
+    kw.setdefault("max_weight", None)
+    kw.setdefault("fill_every", kw.get("every", 63))
     return run_account(px, sc, Universe(stocks=TICK), hold=HoldParams(**kw))
 
 
@@ -108,3 +111,50 @@ def test_far_fewer_fills_than_the_old_policy_on_noisy_scores():
     new, _ = run(px, sc, k=10, every=63)
     assert len(new.filled) < 0.5 * len(old.filled)
     assert audit_fills(new.filled, set(px.columns)) == []
+
+
+def test_trailing_stop_sells_a_big_winner_that_gives_the_gains_back():
+    px = world(drift=0.0, vol=0.002)
+    up = np.concatenate([np.linspace(1, 3.0, 120), np.full(N_DAYS - 120, 3.0)])
+    px["S00"] *= up                                                    # tripled by day 120 ...
+    px.loc[px.index[150:], "S00"] *= 0.65                              # ... then -35% from the peak (still far above the purchase price)
+    sc = const_scores(px, TICK)
+    old, _ = run(px, sc, k=5, every=21, stop_loss=0.25, trail=None, knife=None, jump=None)
+    assert not [f for f in old.filled if f.side == "SELL" and f.ticker == "S00"]       # the cost-based stop never fires
+    acct, _ = run(px, sc, k=5, every=21, stop_loss=0.25, trail=0.30, knife=None, jump=None)
+    sells = [f for f in acct.filled if f.side == "SELL" and f.ticker == "S00"]
+    assert len(sells) == 1 and pd.Timestamp(sells[0].date) == px.index[150]
+
+
+def test_concentration_cap_trims_a_runaway_winner():
+    px = world(drift=0.0, vol=0.002)
+    px["S00"] *= np.concatenate([np.linspace(1, 4.0, 150), np.full(N_DAYS - 150, 4.0)])
+    sc = const_scores(px, TICK)
+    acct, eq = run(px, sc, k=10, every=21, max_weight=0.12, trim_to=0.08, stop_loss=None, knife=None, jump=None)
+    trims = [f for f in acct.filled if f.side == "SELL" and f.ticker == "S00"]
+    assert trims and "S00" in acct.pos                                  # trimmed, not dumped
+    last = px.iloc[-1]
+    assert acct.pos["S00"] * last["S00"] / eq.iloc[-1] < 0.14
+    capless, eq2 = run(px, sc, k=10, every=21, max_weight=None, stop_loss=None, knife=None, jump=None)
+    assert capless.pos["S00"] * last["S00"] / eq2.iloc[-1] > 0.20
+
+
+def test_stopped_out_cash_is_refilled_at_the_next_fill_day_not_the_next_rebalance():
+    px = world(drift=0.0, vol=0.002)
+    px.loc[px.index[130:], "S00"] *= 0.6                               # crash on day 130, between fill days 126 and 147
+    sc = const_scores(px, TICK)
+    acct, _ = run(px, sc, k=5, every=63, fill_every=21, stop_loss=0.25, knife=None, jump=None)
+    stop_day = px.index[130]
+    after = [pd.Timestamp(f.date) for f in acct.filled if f.side == "BUY" and pd.Timestamp(f.date) > stop_day]
+    assert after and px.index.get_loc(min(after)) == 147                # refilled on the next fill day (147), not at 189
+    slow, _ = run(px, sc, k=5, every=63, fill_every=63, stop_loss=0.25, knife=None, jump=None)
+    after2 = [pd.Timestamp(f.date) for f in slow.filled if f.side == "BUY" and pd.Timestamp(f.date) > stop_day]
+    assert px.index.get_loc(min(after2)) == 189
+
+
+def test_etf_with_no_cash_places_no_order_and_sells_no_stock():
+    px = world()
+    sc = const_scores(px, TICK)
+    acct, _ = run(px, sc, k=5, every=21, etf="SPY", etf_weight=0.30, stop_loss=None, knife=None, jump=None)
+    assert not [f for f in acct.log if f.status == "REJECTED"]
+    assert not [f for f in acct.filled if f.side == "SELL" and f.ticker != "SPY"]

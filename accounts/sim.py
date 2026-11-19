@@ -30,11 +30,12 @@ def run_account(prices: pd.DataFrame, scores: pd.DataFrame, universe: Universe |
     for i, d in enumerate(dates):
         px = prices.iloc[i].to_dict()
         if policy is not None:
-            row = None
-            if i % hold.every == 0 and i - exec_lag >= 0:
+            row, mode = None, None
+            if i - exec_lag >= 0 and (i % hold.every == 0 or i % hold.fill_every == 0):
                 j = scores.index.searchsorted(dates[i - exec_lag], side="right") - 1
                 row = scores.iloc[j] if j >= 0 else None
-            policy.day(acct, i, d, px, row, row is not None)
+                mode = "full" if i % hold.every == 0 else "fill"
+            policy.day(acct, i, d, px, row, mode if row is not None else None)
             curve.append((d, acct.equity(px)))
             continue
         if i % every == 0 and i - exec_lag >= 0:
