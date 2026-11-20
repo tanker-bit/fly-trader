@@ -16,6 +16,7 @@ APPROVED_ETFS = (
     "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC",       # S&P sector SPDRs
     "TLT", "IEF", "SHY", "BIL", "AGG", "LQD", "HYG", "TIP",                             # Treasuries, bonds, cash-like
     "GLD", "IAU", "EFA", "EEM", "VNQ",                                                  # gold, international, real estate
+    "QQQM", "VT", "SCHD", "RSP",                                                        # Nasdaq-100 (low fee), world, dividend, equal-weight S&P
 )
 
 # Inverse, leveraged and volatility products: never tradable, even if someone adds them to a list by mistake.
@@ -24,6 +25,18 @@ FORBIDDEN_ETFS = frozenset({
     "SSO", "QLD", "UWM", "UDOW", "SPXL", "UPRO", "TQQQ", "TNA", "SOXL", "FAS", "ERX", "LABU", "TMF", "UGL", "NUGT", "JNUG",
     "UVXY", "SVXY", "VXX", "VIXY", "UVIX", "SVIX",
 })
+
+
+# ETFs that count toward the 30% core: broad-market (US or world) and the multi-sector S&P sector SPDRs. Bonds, gold, real estate,
+# international-only and anything leveraged / inverse / single-stock / ultra-niche never count (and the last group is not even tradable).
+CORE_ETFS = frozenset({
+    "SPY", "VOO", "IVV", "VTI", "VT", "RSP", "QQQ", "QQQM", "DIA", "SCHD", "IWM", "MDY", "IJR",
+    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC",
+})
+
+
+def is_core(ticker: str) -> bool:
+    return str(ticker).upper() in CORE_ETFS and str(ticker).upper() not in FORBIDDEN_ETFS
 
 
 def looks_like_option(ticker: str) -> bool:

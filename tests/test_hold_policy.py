@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from accounts.hold_policy import HoldParams
+from accounts.account import Account
+from accounts.hold_policy import CORES, HoldParams, HoldPolicy
 from accounts.instruments import Universe
 from accounts.sim import run_account
 from experiments.audit_trades import audit_fills
@@ -92,7 +93,7 @@ def test_new_buys_skip_a_stock_that_already_crashed():
 def test_etf_sleeve_is_held_near_its_target_and_never_shorted():
     px = world()
     sc = const_scores(px, TICK)
-    acct, eq = run(px, sc, k=5, every=63, etf="SPY", etf_weight=0.30, stop_loss=None, knife=None, jump=None)
+    acct, eq = run(px, sc, k=5, every=63, core=CORES["spy"], core_weight=0.30, core_floor=0.0, stop_loss=None, knife=None, jump=None)
     assert "SPY" in acct.pos
     first = pd.Timestamp([f for f in acct.filled if f.ticker == "SPY"][0].date)
     row = px.loc[first]
@@ -155,6 +156,155 @@ def test_stopped_out_cash_is_refilled_at_the_next_fill_day_not_the_next_rebalanc
 def test_etf_with_no_cash_places_no_order_and_sells_no_stock():
     px = world()
     sc = const_scores(px, TICK)
-    acct, _ = run(px, sc, k=5, every=21, etf="SPY", etf_weight=0.30, stop_loss=None, knife=None, jump=None)
+    acct, _ = run(px, sc, k=5, every=21, core=CORES["spy"], core_weight=0.30, core_floor=0.0, stop_loss=None, knife=None, jump=None)
     assert not [f for f in acct.log if f.status == "REJECTED"]
     assert not [f for f in acct.filled if f.side == "SELL" and f.ticker != "SPY"]
+
+
+def daily_core_share(px, sc, hold, start_day=126):
+    """Run the policy day by day (same loop as run_account) and record the core's share of equity after each day once trading started."""
+    uni = Universe(stocks=TICK)
+    acct, pol = Account(uni), HoldPolicy(hold, px)
+    shares = []
+    for i, d in enumerate(px.index):
+        row, mode = None, None
+        if i >= 1 and (i % hold.every == 0 or i % hold.fill_every == 0):
+            j = sc.index.searchsorted(px.index[i - 1], side="right") - 1
+            row = sc.iloc[j] if j >= 0 else None
+            mode = "full" if i % hold.every == 0 else "fill"
+        pxd = px.iloc[i].to_dict()
+        pol.day(acct, i, d, pxd, row, mode if row is not None else None)
+        if pol.started:
+            shares.append(pol.core_value(acct, pxd) / acct.equity(pxd))
+    return np.array(shares), acct
+
+
+def core_hold(**kw):
+    base = dict(k=5, every=63, fill_every=21, core=CORES["spy"], core_weight=0.35, core_floor=0.30, stop_loss=None, trail=None,
+                knife=None, jump=None, max_weight=None)
+    base.update(kw)
+    return HoldParams(**base)
+
+
+def test_core_is_at_least_the_floor_every_day_after_trading_starts():
+    px = world(seed=5)
+    px.loc[:, TICK[:5]] *= np.linspace(1.0, 4.0, N_DAYS)[:, None]           # the stocks rally hard: the core's share would drift far below 30%
+    sc = const_scores(px, TICK)
+    shares, acct = daily_core_share(px, sc.iloc[:], core_hold())
+    assert len(shares) > 100 and shares.min() >= 0.30 - 1e-3 and shares[0] > 0.30
+    assert [f for f in acct.filled if f.side == "SELL" and f.ticker in TICK], "the floor was kept by trimming stocks, not by magic"
+    assert not [f for f in acct.log if f.status == "REJECTED"]
+
+
+def test_without_the_floor_the_same_rally_breaks_30_percent():
+    px = world(seed=5)
+    px.loc[:, TICK[:5]] *= np.linspace(1.0, 4.0, N_DAYS)[:, None]
+    shares, _ = daily_core_share(px, const_scores(px, TICK), core_hold(core_floor=0.0))
+    assert shares.min() < 0.25
+
+
+def test_a_basket_core_follows_its_shares_and_renormalises_when_a_member_is_missing():
+    px = world()
+    for t in ("VTI", "RSP", "QQQ"):
+        px[t] = 100.0 * np.cumprod(1 + np.random.default_rng(len(t)).normal(0.0003, 0.01, N_DAYS))
+    sc = const_scores(px, TICK)
+    shares, acct = daily_core_share(px, sc, core_hold(core=CORES["broad"]))
+    spot = {t: acct.pos[t] * px[t].iloc[-1] for t in ("VTI", "RSP", "QQQ")}
+    tot = sum(spot.values())
+    assert 0.35 < spot["VTI"] / tot < 0.65 and spot["RSP"] / tot > 0.12 and spot["QQQ"] / tot > 0.12
+    px2 = px.copy()
+    px2["QQQ"] = np.nan                                                    # one member has no price (not listed yet)
+    _, acct2 = daily_core_share(px2, sc, core_hold(core=CORES["broad"]))
+    assert "QQQ" not in acct2.pos and "VTI" in acct2.pos and "RSP" in acct2.pos
+
+
+def test_only_broad_equity_etfs_count_toward_the_core():
+    px = world()
+    for t in ("TLT", "GLD"):
+        px[t] = 100.0
+    acct = Account(Universe(stocks=TICK))
+    acct.buy_shares("d", "TLT", 1000, 100.0)
+    acct.buy_shares("d", "GLD", 1000, 100.0)
+    acct.buy_shares("d", "SPY", 10, 100.0)
+    pol = HoldPolicy(core_hold(), px)
+    assert abs(pol.core_value(acct, px.iloc[0].to_dict()) - 10 * px["SPY"].iloc[0]) < 1e-6           # only SPY counts
+
+
+def test_a_leveraged_etf_can_never_be_the_core():
+    px = world()
+    px["TQQQ"] = 100.0
+    sc = const_scores(px, TICK)
+    shares, acct = daily_core_share(px, sc, core_hold(core=(("TQQQ", 1.0),)))
+    assert "TQQQ" not in acct.pos and not [f for f in acct.log if f.status == "REJECTED"]
+    assert len([f for f in acct.filled if f.side == "BUY"]) == 5                    # no tradable core -> the stocks use the whole account
+
+
+def test_no_etf_prices_means_no_core_and_no_error():
+    px = world().drop(columns=["SPY"])
+    sc = const_scores(px, TICK)
+    shares, acct = daily_core_share(px, sc, core_hold())
+    assert len(acct.pos) == 5 and len(shares) and shares.max() == 0.0
+
+
+# ---------------------------------------------------------------- the mix: long-term book + core + short-term sleeve
+def mix_hold(**kw):
+    base = dict(k=5, every=63, fill_every=21, stop_loss=None, trail=None, knife=None, jump=None, max_weight=None,
+                tactical_k=2, tactical_weight=0.10, tactical_sell_rank=12, tactical_stop=None)
+    base.update(kw)
+    return HoldParams(**base)
+
+
+def sleeve_names(acct):
+    return {f.ticker for f in acct.filled if f.side == "BUY"} - set(TICK[:5])
+
+
+def test_the_sleeve_has_no_clock_and_no_profit_cap_while_the_fly_still_likes_the_name():
+    px = world(seed=3, drift=0.003)                   # strong uptrend: every name gains far more than 12%
+    sc = const_scores(px, TICK)
+    acct, _ = run_account(px, sc, Universe(stocks=TICK), hold=mix_hold())
+    assert sleeve_names(acct), "the sleeve bought something"
+    assert not [f for f in acct.filled if f.side == "SELL"]       # held for the whole run: no take-profit, no time exit
+
+
+def test_the_sleeve_sells_when_the_fly_ranking_turns_against_the_name():
+    px = world(seed=3)
+    order = TICK[:]
+    sc = const_scores(px, order)
+    sleeve = order[5]                                   # a sleeve name (6th best)
+    worse = [x for x in order if x != sleeve] + [sleeve]  # from day 130 the fly ranks it last
+    sc.iloc[130:] = const_scores(px, worse).reindex(columns=sc.columns).iloc[130:].to_numpy()
+    acct, _ = run_account(px, sc, Universe(stocks=TICK), hold=mix_hold())
+    sells = [f for f in acct.filled if f.side == "SELL" and f.ticker == sleeve]
+    assert sells and str(sells[0].date)[:10] >= str(px.index[130].date())     # sold only after the fly changed its mind
+
+
+def test_sleeve_downside_stop_still_works_when_enabled():
+    px = world(seed=6)
+    sc = const_scores(px, TICK)
+    px.loc[px.index[100]:, TICK[5]] *= 0.5
+    acct, _ = run_account(px, sc, Universe(stocks=TICK), hold=mix_hold(tactical_stop=0.08))
+    sells = [f for f in acct.filled if f.side == "SELL" and f.ticker == TICK[5]]
+    assert sells and str(sells[0].date)[:10] <= str(px.index[102].date())
+
+
+def test_long_term_holdings_survive_a_rank_drop_that_a_new_holding_would_not():
+    px = world(seed=7)
+    order = TICK[:]
+    sc = const_scores(px, order)
+    worse = order[1:] + order[:1]
+    sc.iloc[130:] = const_scores(px, worse).reindex(columns=sc.columns).iloc[130:].to_numpy()
+    kw = dict(tactical_k=0, sell_rank=10, min_hold=10, lt_days=100)
+    a_short, _ = run_account(px, sc, Universe(stocks=TICK), hold=mix_hold(lt_sell_rank=None, **kw))
+    a_long, _ = run_account(px, sc, Universe(stocks=TICK), hold=mix_hold(lt_sell_rank=999, **kw))
+    sold = lambda a: [f for f in a.filled if f.side == "SELL" and f.ticker == TICK[0]]
+    assert sold(a_short) and not sold(a_long)
+
+
+def test_mix_preset_has_core_floor_and_sleeve_and_audit_passes():
+    from accounts.hold_policy import MIX
+    assert MIX.core and MIX.tactical_k > 0 and MIX.core_floor >= 0.30
+    assert not hasattr(MIX, "tactical_take") and not hasattr(MIX, "tactical_days")      # no profit ceiling, no forced exit date
+    px = world(seed=8)
+    sc = const_scores(px, TICK)
+    acct, _ = run_account(px, sc, Universe(stocks=TICK), hold=MIX)
+    assert audit_fills(acct.filled, set(px.columns)) == []
