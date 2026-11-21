@@ -105,6 +105,25 @@ def summarize(t: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def label_frame(panel: pd.DataFrame, horizon: int, sectors: dict | None = None) -> pd.DataFrame:
+    """date x ticker forward excess return over `horizon` days; with `sectors` (ticker -> sector) the day's sector mean is subtracted
+    too (the league's own kind of label), so a sector or style tilt cannot score."""
+    from experiments.fundamentals_audit import forward_excess
+    y = forward_excess(panel, horizon)
+    if sectors:
+        from tournament.labels import sector_neutral
+        y = sector_neutral(y, sectors)
+    return y.unstack("ticker")
+
+
+def _label_name(n: str) -> str:
+    if n == "league":
+        return "league"
+    if n.startswith("sn"):
+        return f"{n[2:-1]} d sector-neutral"
+    return f"{n[3:-1]} d"
+
+
 def horizon_table(tables: dict, cols=COMPONENTS) -> pd.DataFrame:
     """A3: one line per component, mean rank IC and its t across rounds for every label (league label, 5/21/63/126-day...), side by side.
     tables: the first output of blend_ics."""
@@ -114,7 +133,7 @@ def horizon_table(tables: dict, cols=COMPONENTS) -> pd.DataFrame:
         cs = [c for c in cols if c in t.columns]
         k = t[cs].count()
         tt = t[cs].mean() / (t[cs].std(ddof=1) / np.sqrt(k))
-        label = "league" if n == "league" else n.replace("fwd", "").replace("d", " d")
+        label = _label_name(n)
         parts[(label, "IC")] = t[cs].mean()
         parts[(label, "t")] = tt
         parts[(label, "n")] = k
@@ -137,8 +156,8 @@ def load_flies(store, rounds) -> dict:
 def main():
     import argparse
 
-    from experiments.fund_rules import labels_for
     from tournament.data import Data, load_panel
+    from tournament.labels import load_sectors
     from tournament.store import Store
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -154,13 +173,19 @@ def main():
     panel = load_panel(cfg["panel"])
     rounds = [r for r in range(0, 200) if data.round_valid(r)
               and any((store.root / "rounds" / "scores").glob(f"r{r:02d}_*.npz"))]
-    labels = {f"fwd{h}d": (labels_for(panel, int(h)), int(h)) for h in a.horizons.split(",") if h}
+    hs = [int(h) for h in a.horizons.split(",") if h]
+    labels = {f"fwd{h}d": (label_frame(panel, h), h) for h in hs}
+    if cfg.get("sectors"):                              # the same horizons with the sector mean removed (A3b)
+        sectors = load_sectors(cfg["sectors"])
+        labels.update({f"sn{h}d": (label_frame(panel, h, sectors), h) for h in hs})
+    else:
+        print("note: this league has no sector file, so no sector-neutral labels", flush=True)
     print(f"{len(rounds)} rounds with saved fly scores: {rounds[0]}-{rounds[-1]}", flush=True)
     tables, corr = blend_ics(data, load_flies(store, rounds), rounds, cfg["score_every"], labels)
     pd.set_option("display.width", 220)
     for n, t in ([] if a.quiet else tables.items()):
         t = t.dropna(how="all")
-        title = "the league's own label" if n == "league" else f"forward {n[3:-1]}-day excess return"
+        title = "the league's own label" if n == "league" else f"forward {_label_name(n)} excess return"
         print(f"\n=== mean rank IC per round against {title} ===\n")
         print(t.round(3).to_string())
         print("\nacross rounds\n")

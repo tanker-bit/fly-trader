@@ -80,3 +80,23 @@ def test_horizon_table_lines_up_components_and_horizons():
     assert list(h.index) == ["fly", "ridge", "fund", "rev"]                  # blends are left out, components kept in order
     assert ("league", "IC") in h.columns and ("63 d", "t") in h.columns and h.loc["fly", ("league", "n")] == 3 and h.loc["fly", ("63 d", "n")] == 2
     assert abs(h.loc["fly", ("63 d", "IC")] - 0.05) < 1e-9
+
+
+def test_label_frame_sector_neutral_removes_the_sector_mean_and_horizon_table_names_it():
+    from experiments.blend_test import horizon_table, label_frame
+    rng = np.random.default_rng(0)
+    dates = pd.bdate_range("2020-01-01", periods=40)
+    tick = [f"T{i}" for i in range(12)]
+    sectors = {t: ("A" if i < 4 else "B" if i < 8 else "C") for i, t in enumerate(tick)}
+    sec_ret = {s: rng.normal(0, 0.01, len(dates)) for s in "ABC"}
+    rows = {(d, t): sec_ret[sectors[t]][j] + rng.normal(0, 0.002) for j, d in enumerate(dates) for t in tick}
+    panel = pd.DataFrame({"fwd_ret": pd.Series(rows)})
+    panel.index.names = ["date", "ticker"]
+    plain = label_frame(panel, 5)
+    neutral = label_frame(panel, 5, sectors)
+    d = plain.dropna().index[3]
+    by_sec = neutral.loc[d].groupby(pd.Series(sectors)).mean()
+    assert by_sec.abs().max() < 1e-12 and plain.loc[d].groupby(pd.Series(sectors)).mean().abs().max() > 1e-4
+    t = pd.DataFrame({"fly": [0.01, 0.02, 0.0], "ridge": [0.0, 0.01, 0.0], "fund": [0.02, 0.0, 0.01], "rev": [0.0, 0.0, 0.01]})
+    h = horizon_table({"league": t, "fwd63d": t, "sn63d": t})
+    assert ("63 d sector-neutral", "IC") in h.columns and ("63 d", "IC") in h.columns
