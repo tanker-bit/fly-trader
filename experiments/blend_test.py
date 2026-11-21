@@ -105,6 +105,22 @@ def summarize(t: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def horizon_table(tables: dict, cols=COMPONENTS) -> pd.DataFrame:
+    """A3: one line per component, mean rank IC and its t across rounds for every label (league label, 5/21/63/126-day...), side by side.
+    tables: the first output of blend_ics."""
+    parts = {}
+    for n, t in tables.items():
+        t = t.dropna(how="all")
+        cs = [c for c in cols if c in t.columns]
+        k = t[cs].count()
+        tt = t[cs].mean() / (t[cs].std(ddof=1) / np.sqrt(k))
+        label = "league" if n == "league" else n.replace("fwd", "").replace("d", " d")
+        parts[(label, "IC")] = t[cs].mean()
+        parts[(label, "t")] = tt
+        parts[(label, "n")] = k
+    return pd.DataFrame(parts)
+
+
 def load_flies(store, rounds) -> dict:
     out = {}
     for r in rounds:
@@ -127,7 +143,8 @@ def main():
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default="league_data")
-    ap.add_argument("--horizons", default="63", help="extra forward-return labels in trading days (comma separated)")
+    ap.add_argument("--horizons", default="63", help="extra forward-return labels in trading days (comma separated), e.g. 5,21,63,126")
+    ap.add_argument("--quiet", action="store_true", help="skip the per-round tables; print only the across-horizon summary and correlations")
     ap.add_argument("--out", default=None, help="CSV prefix")
     a = ap.parse_args()
     store = Store(a.root)
@@ -141,7 +158,7 @@ def main():
     print(f"{len(rounds)} rounds with saved fly scores: {rounds[0]}-{rounds[-1]}", flush=True)
     tables, corr = blend_ics(data, load_flies(store, rounds), rounds, cfg["score_every"], labels)
     pd.set_option("display.width", 220)
-    for n, t in tables.items():
+    for n, t in ([] if a.quiet else tables.items()):
         t = t.dropna(how="all")
         title = "the league's own label" if n == "league" else f"forward {n[3:-1]}-day excess return"
         print(f"\n=== mean rank IC per round against {title} ===\n")
@@ -150,6 +167,8 @@ def main():
         print(summarize(t).round(3).to_string())
         if a.out:
             t.to_csv(f"{a.out}_{n}.csv")
+    print("\nA3: mean rank IC of each component by label horizon (t across rounds is optimistic; n = rounds with data)\n")
+    print(horizon_table(tables).round(3).to_string())
     print("\nmean rank correlation between the components (low = they carry different information)\n")
     print(corr.round(2).to_string())
 

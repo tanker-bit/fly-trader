@@ -69,3 +69,14 @@ def test_summarize_compares_with_the_best_single_component():
     s = summarize(t)
     assert s.loc["ridge", "paired_t"] != s.loc["ridge", "paired_t"]            # NaN for the best single itself
     assert s.loc["fly+ridge", "minus ridge"] > 0 and s.loc["fly+ridge", "rounds_positive"] == 4
+
+
+def test_horizon_table_lines_up_components_and_horizons():
+    from experiments.blend_test import horizon_table
+    a = pd.DataFrame({"fly": [0.02, 0.03, 0.01], "ridge": [0.01, 0.0, 0.02], "fund": [0.0, 0.01, 0.0], "rev": [0.02, 0.01, 0.03],
+                      "fly+fund": [0.01, 0.02, 0.0]})
+    b = a.iloc[:2] * 2
+    h = horizon_table({"league": a, "fwd63d": b})
+    assert list(h.index) == ["fly", "ridge", "fund", "rev"]                  # blends are left out, components kept in order
+    assert ("league", "IC") in h.columns and ("63 d", "t") in h.columns and h.loc["fly", ("league", "n")] == 3 and h.loc["fly", ("63 d", "n")] == 2
+    assert abs(h.loc["fly", ("63 d", "IC")] - 0.05) < 1e-9
