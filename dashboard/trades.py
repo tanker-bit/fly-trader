@@ -8,12 +8,14 @@ SILENT = constant score (dead circuit), as before; no account is run
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 
-from accounts.instruments import Universe, START_CASH
+from accounts.etfs import mask_before_listing
+from accounts.hold_policy import MIX
+from accounts.instruments import APPROVED_ETFS, Universe, START_CASH, is_core
 from accounts.league_report import prices_from_returns
 from accounts.sim import run_account
 from dashboard.state import Decision
@@ -54,19 +56,61 @@ def _snapshot(held, basis, cash, prices_row):
     return cash + sum(r[3] for r in pos), tuple(pos)
 
 
+PRE = 125       # price days before the first score, so the hold policy's 63-day filters and the first rebalance line up with the window
+
+
+def run_policy(scores: dict, index, fwd1: pd.DataFrame, policy: str = "hold", hold=None, k: int = 20, every: int = 21,
+               cost_bps: float = 10.0, sell_rank=None, pre: int = PRE):
+    """Run one fly's account over a saved round. policy 'hold' (default) = the MIX: a 35% broad-ETF core with a hard 30% floor, a
+    medium/long-term stock book and a small short-term sleeve; 'old' = the first top-K re-equalising policy. fwd1 may carry ETF columns.
+    -> (acct, eq, prices, sc)."""
+    idxs = [i for i in sorted(scores) if i < len(index)]
+    stocks = [c for c in fwd1.columns if c not in APPROVED_ETFS]
+    sc = pd.DataFrame({index[i][0]: pd.Series(np.asarray(scores[i], float), index=index[i][1]) for i in idxs}).T.sort_index()
+    if policy == "old":
+        win = list(range(idxs[0], idxs[-1] + 1))
+        prices = prices_from_returns(fwd1[stocks], win).ffill()
+        acct, eq = run_account(prices, sc, Universe(stocks=prices.columns), k=k, every=every, cost_bps=cost_bps, sell_rank=sell_rank)
+        return acct, eq, prices, sc
+    pre = max(min(pre, idxs[0]), 0)
+    pre = max((pre + 1) // 21 * 21 - 1, 0) if pre else 0           # (pre + 1) a multiple of 21 so the first rebalance falls on the window start
+    win = list(range(idxs[0] - pre, idxs[-1] + 1))
+    prices = mask_before_listing(prices_from_returns(fwd1, win), fwd1.iloc[win])
+    h = replace(hold or MIX, k=k)
+    acct, eq = run_account(prices, sc, Universe(stocks=[c for c in stocks if c in prices.columns]), cost_bps=cost_bps, hold=h)
+    return acct, eq, prices, sc
+
+
+def core_share_by_day(fills, prices: pd.DataFrame) -> pd.Series:
+    """Broad-ETF core as a share of equity at the end of every day from the first fill on (re-built from the fills alone)."""
+    held, cash, out = {}, START_CASH, {}
+    by_day = {}
+    for f in fills:
+        by_day.setdefault(pd.Timestamp(f.date), []).append(f)
+    if not by_day:
+        return pd.Series(dtype=float)
+    for day in prices.index[prices.index >= min(by_day)]:
+        for f in by_day.get(day, []):
+            sign = 1.0 if f.side == "BUY" else -1.0
+            held[f.ticker] = held.get(f.ticker, 0.0) + sign * f.shares
+            cash -= sign * (f.shares * f.price) + f.fee
+        row = prices.loc[day]
+        vals = {t: n * float(row[t]) for t, n in held.items() if n > 1e-9 and np.isfinite(row.get(t, np.nan))}
+        eq = cash + sum(vals.values())
+        out[day] = sum(v for t, v in vals.items() if is_core(t)) / eq if eq > 0 else 0.0
+    return pd.Series(out)
+
+
 def replay_trades(scores: dict, index, fwd1: pd.DataFrame, agent: str, rnd: int, k: int = 20, every: int = 21,
-                  cost_bps: float = 10.0, sell_rank=None) -> list:
+                  cost_bps: float = 10.0, sell_rank=None, policy: str = "hold", hold=None) -> list:
     """{date_idx: score array} -> chronological [TradeDecision] from the account's real fills (BUY/SELL) plus a HOLD per rebalance.
-    Each decision carries the cash, equity and positions right after it."""
+    Each decision carries the cash, equity and positions right after it (ETFs included)."""
     idxs = [i for i in sorted(scores) if i < len(index)]
     if not idxs:
         return []
     if all(np.nanstd(scores[i]) < 1e-9 for i in idxs):
         return [TradeDecision(str(index[i][0].date()), "", "SILENT", float(np.nanmean(scores[i])), agent, rnd) for i in idxs]
-    win = list(range(idxs[0], idxs[-1] + 1))
-    prices = prices_from_returns(fwd1, win).ffill()
-    sc = pd.DataFrame({index[i][0]: pd.Series(np.asarray(scores[i], float), index=index[i][1]) for i in idxs}).T.sort_index()
-    acct, _ = run_account(prices, sc, Universe(stocks=prices.columns), k=k, every=every, cost_bps=cost_bps, sell_rank=sell_rank)
+    acct, _, prices, sc = run_policy(scores, index, fwd1, policy=policy, hold=hold, k=k, every=every, cost_bps=cost_bps, sell_rank=sell_rank)
     out, held, basis, cash, by_day = [], {}, {}, START_CASH, {}
     for f in acct.filled:
         by_day.setdefault(pd.Timestamp(f.date), []).append(f)

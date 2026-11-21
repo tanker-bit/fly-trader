@@ -31,6 +31,7 @@ class DashboardApp:
         self.snap = state.snapshot(league_root, sec_root)
         self.index = None                       # [(date, tickers)] once the panel labels are read
         self.fwd1 = None                        # next-day returns for the real-trade replay (None -> old score replay)
+        self.etf_ok = False                     # True when ETF prices were found, so the 30% broad-ETF core can be held
         self.real = False                       # True while the decisions come from real account fills
         self.n_universe = 0
         self.index_error = None
@@ -61,6 +62,13 @@ class DashboardApp:
                     cfg = Store(self.league_root).load_config()
                     cfg["panel"] = self.panel
                     idx, self.fwd1 = trades.league_index(cfg)
+                    try:                            # approved ETFs (fetch_etfs cache next to the panel) join the stocks
+                        from pathlib import Path
+                        from accounts.etfs import with_etfs
+                        self.fwd1 = with_etfs(self.fwd1, Path(self.panel).parent)
+                        self.etf_ok = "SPY" in self.fwd1.columns
+                    except Exception:
+                        self.etf_ok = False
                 except Exception:
                     idx, self.fwd1 = None, None     # cannot align: old replay
             if idx is None:
@@ -170,6 +178,8 @@ class DashboardApp:
             return "NO SAVED SCORES YET (agents from rounds before v6 saved none)"
         d = self.last_decision
         what = "real long-only account fills, simulated $1M, no real money" if self.real else "saved out-of-sample scores, no real trades"
+        if self.real and not self.etf_ok:
+            what += "; NO ETF DATA, core floor off (run fetch_etfs)"
         return f"REPLAY r{self.src[1]:02d} {self.src[0]} {d.when if d else ''}  ({what})"
 
     def view(self):
