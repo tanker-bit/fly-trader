@@ -73,6 +73,19 @@ python -m experiments.eval_suite --panel data_fundamentals/panel.parquet
 - SEC EDGAR requires a real User-Agent with your name and contact email and at most 8 requests per second.
 - A league round takes about 10 minutes with 4 workers on a 12-thread machine.
 
+## Simulated accounts and known limits
+
+**Simulated accounts.** Every fly can trade a pretend $1,000,000 account (`accounts/`): long-only, whole shares, 10 bps cost per trade, no shorting, no options, only stocks from the league universe plus approved plain ETFs (leveraged, inverse and volatility funds are refused by the engine). A fly can only sell what it owns. The default policy (`accounts/hold_policy.py`, preset `MIX`) keeps at least 30% of the account in broad-market or multi-sector ETFs at all times (target 35%, checked every day), holds a stock book of about 20 names for the medium to long term, and uses a small short-term sleeve (about 5%). The sleeve has no profit target and no exit date: it sells a name when the fly's own ranking turns against it. Mechanical exits are limited to downside stops and a concentration cap. `python -m experiments.audit_trades` re-checks the fills independently (no short sales, no negative cash, core never under 30%).
+
+**What the numbers say.** Over 15 rounds the account policies are statistically indistinguishable from each other and all trail an equal-weight benchmark of the same stocks; the calmer policy mainly cuts trading (about 120 fills per round instead of about 320) and drawdowns, not returns. This is a simulation, not a trading record.
+
+**Survivorship bias (known, not fixed).** The price universe is S&P 500 names that still have price history. Stocks that were removed from the index and then delisted (bankruptcies, takeovers, collapses) are missing, so the fly never gets the chance to buy the ones that went to zero. This most likely flatters every stock-picking result in this repo:
+- absolute returns of the stock book are probably too high;
+- strategies that buy beaten-down names (the flies' weak reversal signal is the clearest case) are the most exposed, because the worst losers are exactly the missing ones;
+- comparisons between policies on the same universe, and against the equal-weight benchmark of the same universe, are affected less but not immune;
+- ETF results (SPY, VTI and the other core funds) do not have this problem, so stock results look better than ETF results by some unknown margin.
+Treat positive stock results as upper bounds. The fix is a survivorship-free universe with prices for removed names (see the roadmap).
+
 ## Roadmap
 
 - [x] Repo scaffold, trading env, buy-and-hold baseline
