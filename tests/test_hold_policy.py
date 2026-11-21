@@ -308,3 +308,15 @@ def test_mix_preset_has_core_floor_and_sleeve_and_audit_passes():
     sc = const_scores(px, TICK)
     acct, _ = run_account(px, sc, Universe(stocks=TICK), hold=MIX)
     assert audit_fills(acct.filled, set(px.columns)) == []
+
+
+def test_mix_never_sends_an_order_it_cannot_afford():
+    from accounts.hold_policy import MIX
+    from dataclasses import replace
+    px = world(seed=9)
+    px.loc[:, TICK[:10]] *= 400.0                    # pricey shares and a fully invested account: the old loop kept firing 0-share orders
+    for e in ("VTI", "RSP", "QQQ"):
+        px[e] = px["SPY"] * (1.0 + 0.0001 * np.arange(N_DAYS))
+    sc = const_scores(px, TICK)
+    acct, _ = run_account(px, sc, Universe(stocks=TICK), hold=replace(MIX, k=8))
+    assert acct.filled and not acct.rejected

@@ -23,5 +23,14 @@ def test_overspending_and_foreign_ticker_flagged():
 
 def test_real_engine_fills_are_clean():
     index, fwd1, scores = make()
-    acct, eq, uni = run(scores, index, fwd1, k=5, every=21, cost_bps=10.0)
+    acct, eq, uni, _ = run(scores, index, fwd1, k=5, every=21, cost_bps=10.0, policy="old")
     assert acct.filled and audit_fills(acct.filled, uni) == []
+
+
+def test_hold_policy_fills_with_etfs_pass_the_audit_and_the_floor():
+    from dashboard.trades import core_share_by_day
+    from tests.test_dashboard_trades import make_with_etfs
+    index, fwd1, scores = make_with_etfs()
+    acct, eq, uni, prices = run(scores, index, fwd1, k=10, every=21, cost_bps=10.0)
+    assert acct.filled and audit_fills(acct.filled, uni) == []
+    assert core_share_by_day(acct.filled, prices).min() >= 0.30 - 0.003

@@ -30,7 +30,7 @@ def test_decisions_are_real_fills_long_only():
 
 def test_first_rebalance_buys_k_names_and_scores_are_attached():
     index, fwd1, scores = make()
-    dec = replay_trades(scores, index, fwd1, "f1", 0, k=5, every=21)
+    dec = replay_trades(scores, index, fwd1, "f1", 0, k=5, every=21, policy="old")
     first_day = dec[0].when
     buys = [d for d in dec if d.when == first_day and d.action == "BUY"]
     assert len(buys) == 5 and all(np.isfinite(d.score) for d in buys)
@@ -77,7 +77,7 @@ def test_league_index_matches_data_for_a_blended_label(tmp_path):
 
 def test_decisions_carry_cash_equity_and_positions():
     index, fwd1, scores = make()
-    dec = replay_trades(scores, index, fwd1, "f1", 0, k=5, every=21)
+    dec = replay_trades(scores, index, fwd1, "f1", 0, k=5, every=21, policy="old")
     first = dec[0]
     assert first.action == "BUY" and first.cash < 1_000_000 and first.equity <= 1_000_000 + 1     # one buy: fee only
     assert abs(first.equity - 1_000_000) < 0.002 * 1_000_000                                       # equity ~ start (fees, rounding)
@@ -97,3 +97,31 @@ def test_sells_reduce_positions_and_cash_matches_fills():
     assert sells
     for d in sells:
         assert d.cash > 0
+
+
+def make_with_etfs(n_days=260, n=30, seed=0):
+    index, fwd1, _ = make(n_days=n_days, n=n, seed=seed)
+    rng = np.random.default_rng(seed + 1)
+    for e in ("VTI", "RSP", "QQQ", "SPY"):
+        fwd1[e] = rng.normal(0.0004, 0.008, n_days)
+    scores = {i: np.random.default_rng(i).normal(size=n) for i in range(130, n_days, 5)}
+    return index, fwd1, scores
+
+
+def test_default_policy_buys_etfs_and_the_core_stays_above_30_percent():
+    from dashboard.trades import core_share_by_day, run_policy
+    index, fwd1, scores = make_with_etfs()
+    dec = replay_trades(scores, index, fwd1, "f1", 0, k=10, every=21)
+    held_etfs = {p[0] for d in dec for p in d.positions} & {"VTI", "RSP", "QQQ"}
+    assert held_etfs, "ETFs show up in the portfolio positions"
+    acct, eq, prices, sc = run_policy(scores, index, fwd1, k=10)
+    share = core_share_by_day(acct.filled, prices)
+    assert len(share) and share.min() >= 0.30 - 0.003
+    assert not [f for f in acct.log if f.status == "REJECTED"]
+
+
+def test_default_policy_without_etf_columns_still_runs_with_stocks_only():
+    index, fwd1, scores = make(n_days=200)
+    scores = {i: v for i, v in scores.items()}
+    dec = replay_trades(scores, index, fwd1, "f1", 0, k=5)
+    assert dec and {p[0] for d in dec for p in d.positions} <= set(fwd1.columns)

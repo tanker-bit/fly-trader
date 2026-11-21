@@ -65,7 +65,7 @@ class HoldParams:
 
 
 # The mix the dashboard and the audit use: medium/long-term stock book + a 35% broad core + a small short-term sleeve.
-MIX = HoldParams(core=CORES["broad"], lt_sell_rank=100, tactical_k=4)
+MIX = HoldParams(core=CORES["broad"], lt_sell_rank=100, tactical_k=3, tactical_weight=0.05)
 
 
 class HoldPolicy:
@@ -187,8 +187,8 @@ class HoldPolicy:
             if t in acct.pos or self.blocked(i, t):
                 continue
             budget = min(per, acct.cash - equity * p.reserve)
-            if budget > 0 and acct.buy_dollars(date, t, budget, px[t]).status == "FILLED":
-                slots -= 1
+            if budget >= float(px[t]) * (1.0 + acct.cost) and acct.buy_dollars(date, t, budget, px[t]).status == "FILLED":
+                slots -= 1                                              # too little cash for one share -> no order at all
 
         # 2b) short-term sleeve: the next-best names (the long book already took the best); it exits when the fly's rank for the name falls
         if p.tactical_k > 0:
@@ -200,7 +200,7 @@ class HoldPolicy:
                 if t in acct.pos or self.blocked(i, t):
                     continue
                 budget = min(tper, acct.cash - equity * p.reserve)
-                if budget > 0 and acct.buy_dollars(date, t, budget, px[t]).status == "FILLED":
+                if budget >= float(px[t]) * (1.0 + acct.cost) and acct.buy_dollars(date, t, budget, px[t]).status == "FILLED":
                     self.tact[t] = i
                     tslots -= 1
 

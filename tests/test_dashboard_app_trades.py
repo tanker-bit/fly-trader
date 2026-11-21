@@ -21,6 +21,7 @@ def fake_app(app_mod, monkeypatch, fwd1):
     a.league_root, a.pin, a._lock = "x", None, threading.Lock()
     a.index, a.fwd1, a.real, a.src, a.decisions, a.cursor, a.last_decision = None, fwd1, False, None, [], 0, None
     a.index_error = None
+    a.etf_ok = True
     a.snap = types.SimpleNamespace(top=types.SimpleNamespace(id="f1"), last_done_round=0, round=0, agents=[])
     return a
 
@@ -107,3 +108,14 @@ def test_date_header_follows_the_last_decision(monkeypatch):
     a._refresh_replay(a.snap)
     a.last_decision = a.decisions[0]
     assert a._date_header() == {"trade_date": a.decisions[0].when} and len(a.decisions[0].when) == 10
+
+
+def test_label_warns_when_there_is_no_etf_data(monkeypatch):
+    app = load_app(monkeypatch)
+    index, fwd1, sc = data()
+    monkeypatch.setattr(app.state, "load_scores", lambda root, r, aid: sc)
+    a = fake_app(app, monkeypatch, fwd1)
+    a.etf_ok = False
+    a.index = index
+    a._refresh_replay(a.snap)
+    assert a.real and "NO ETF DATA" in a.replay_label()
