@@ -114,6 +114,8 @@ def run_agent_round(aid, r):
     np.savez_compressed(sdir / f"r{r:02d}_{aid}.npz", **{f"d{i}": v.astype(np.float32) for i, v in sc.items()})
     rec["history"].append(dict(round=r, ic=float(np.mean(ics)), sd=float(np.std(ics, ddof=1)) if len(ics) > 1 else 0.0,
                                n=len(ics)))
+    if all(float(np.nanstd(v)) < 1e-9 for v in sc.values()):       # constant scores on every date: IC is exactly 0 and says nothing
+        rec["history"][-1]["silent"] = True
     rec["last_round_done"] = r
     store.save_weights(aid, ag.syn.W)
     store.save_agent(rec)
@@ -232,6 +234,10 @@ def select_and_breed(store, cfg, r):
     elig = [a for a in store.alive() if a["born_round"] <= r and a["last_round_done"] == r]
     elig.sort(key=lambda a: -sel_score(a))
     keep, culled = choose_keep(elig, cfg)
+    by_niche = {}
+    for a in elig:
+        by_niche.setdefault(niche(a["genome"]), []).append(bool(a["history"][-1].get("silent")))
+    dead = {n for n, flags in by_niche.items() if all(flags)}      # slices whose every fly was silent this round (e.g. fundamentals before the data exist)
     for a in culled:
         a["status"] = "culled"
         a["culled_round"] = r
@@ -254,7 +260,8 @@ def select_and_breed(store, cfg, r):
             if cfg.get("diverse") and feats:
                 sets = usable_sets(feats)
                 held = {s: sum(niche(a["genome"]) == s for a in keep) for s in map(tuple, sets)}
-                low = [s for s, c in held.items() if c == min(held.values())]
+                live = {s: c for s, c in held.items() if s not in dead} or held
+                low = [s for s, c in live.items() if c == min(live.values())]
                 slice_ = low[int(rng.integers(len(low)))]
             g = random_genome(rng, cfg.get("n_obs", 13), feats=feats, diverse=bool(cfg.get("diverse")), groups=slice_)
             child = new_record(cid, g, born_round=r + 1, parent=None, gen=0, inherited=False)
@@ -267,7 +274,7 @@ def select_and_breed(store, cfg, r):
         g0 = parent["genome"]
         if p_struct > 0 and g0.get("groups") and feats and rng.random() < p_struct:     # structural mutation: a new feature slice
             g1 = dict(g0)
-            g1["groups"] = neighbor_set(g0["groups"], rng, feats)
+            g1["groups"] = neighbor_set(g0["groups"], rng, feats, avoid=dead)
             nv = n_view(g1, feats)
             g1["kc_inputs"] = int(min(g1["kc_inputs"], nv))
             gen_ = mutate(g1, rng, rewire=True, freeze_init=False, n_obs=nv)

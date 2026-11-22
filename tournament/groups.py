@@ -51,10 +51,13 @@ def niche(genome: dict) -> tuple:
     return tuple(genome.get("groups") or ("all",))
 
 
-def neighbor_set(groups, rng, feats) -> list:
-    """A usable slice that differs from `groups` by exactly one group added or removed (any other usable slice if none is that close)."""
+def neighbor_set(groups, rng, feats, avoid=()) -> list:
+    """A usable slice that differs from `groups` by exactly one group added or removed (any other usable slice if none is that close).
+    Slices in `avoid` (e.g. ones that produced only silent flies this round) are skipped while any other choice exists."""
     cur = set(groups)
     sets = usable_sets(feats)
+    avoid = {tuple(x) for x in avoid}
+    sets = [s for s in sets if tuple(s) not in avoid] or sets
     near = [s for s in sets if len(cur ^ set(s)) == 1]
     pool = near or [s for s in sets if set(s) != cur] or sets
     return list(pool[int(rng.integers(len(pool)))])

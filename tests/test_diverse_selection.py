@@ -105,3 +105,21 @@ def test_breeding_is_idempotent_with_all_options_on():
     assert len(store.alive()) == 10
     _, culled2, k2 = select_and_breed(store, c, 0)
     assert not k2 and not culled2 and len(store.alive()) == 10
+
+
+def test_dead_slices_get_no_immigrants_and_no_structural_moves():
+    slices = [("price",)] * 4 + [("price", "risk")] * 4 + [("fund",)] * 2
+    store = make_store(slices, [0.05, 0.04, 0.03, 0.02, 0.05, 0.04, 0.03, 0.02, 0.0, 0.0])
+    for aid in ("a0008", "a0009"):
+        rec = store.load_agent(aid)
+        rec["history"][-1]["silent"] = True
+        store.save_agent(rec)
+    c = cfg(niching=True, niche_cap=3, immigrants=4, p_struct=1.0, keep=6)
+    _, _, kids = select_and_breed(store, c, 0)
+    assert kids and all(tuple(k["genome"]["groups"]) != ("fund",) for k in kids)
+
+
+def test_silent_flies_rank_below_negative_ones():
+    from tournament.league import sel_score
+    r = dict(history=[dict(round=0, ic=0.0, silent=True)])
+    assert sel_score(r) == -9.0
