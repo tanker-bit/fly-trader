@@ -247,8 +247,10 @@ def select_and_breed(store, cfg, r):
     w = np.arange(len(keep), 0, -1, dtype=float)
     kids = []
     n_imm = min(int(cfg.get("immigrants", 0)), max(0, need))
+    rng_imm = np.random.default_rng([cfg["seed"], r, 7919])      # own stream: with `rng` an immigrant would copy the genes of the league's first flies
     p_struct = float(cfg.get("p_struct", 0.0))
     feats = cfg.get("feats")
+    imm_held = None
     for j in range(max(0, need)):
         st = store.load_state()
         cid = f"a{st['next_id']:04d}"
@@ -259,11 +261,13 @@ def select_and_breed(store, cfg, r):
             slice_ = None
             if cfg.get("diverse") and feats:
                 sets = usable_sets(feats)
-                held = {s: sum(niche(a["genome"]) == s for a in keep) for s in map(tuple, sets)}
+                held = imm_held if imm_held is not None else {s: sum(niche(a["genome"]) == s for a in keep) for s in map(tuple, sets)}
+                imm_held = held
                 live = {s: c for s, c in held.items() if s not in dead} or held
                 low = [s for s, c in live.items() if c == min(live.values())]
-                slice_ = low[int(rng.integers(len(low)))]
-            g = random_genome(rng, cfg.get("n_obs", 13), feats=feats, diverse=bool(cfg.get("diverse")), groups=slice_)
+                slice_ = low[int(rng_imm.integers(len(low)))]
+                held[slice_] += 1                               # the next immigrant goes to a different thin slice
+            g = random_genome(rng_imm, cfg.get("n_obs", 13), feats=feats, diverse=bool(cfg.get("diverse")), groups=slice_)
             child = new_record(cid, g, born_round=r + 1, parent=None, gen=0, inherited=False)
             child["immigrant"] = True
             store.save_agent(child)

@@ -123,3 +123,24 @@ def test_silent_flies_rank_below_negative_ones():
     from tournament.league import sel_score
     r = dict(history=[dict(round=0, ic=0.0, silent=True)])
     assert sel_score(r) == -9.0
+
+
+def test_immigrants_are_not_copies_of_the_first_flies_and_spread_over_slices():
+    from tournament.genome import random_genome as rg
+    c = cfg(niching=True, niche_cap=3, immigrants=4)
+    store = Store(tempfile.mkdtemp())
+    store.save_state(dict(round=0, next_id=10, trials=10))
+    rng = np.random.default_rng([c["seed"], 0])                 # the stream a league's first flies could be drawn from
+    for i in range(10):
+        rec = new_record(f"a{i:04d}", rg(rng, feats=FEATS, diverse=True, groups=["price", "risk", "fund"]), born_round=0)
+        rec["last_round_done"] = 0
+        rec["history"] = [dict(round=0, ic=0.1 - 0.01 * i, sd=0.1, n=10)]
+        rec["trained_idx"], rec["n_seen"] = 99, 800
+        store.save_agent(rec)
+        store.save_weights(rec["id"], np.ones((3, 4)))
+    first = {(a["genome"]["lr0"], a["genome"]["tau_anneal"]) for a in store.alive()}
+    _, _, kids = select_and_breed(store, c, 0)
+    imm = [k for k in kids if k.get("immigrant")]
+    assert len(imm) == 4
+    assert all((k["genome"]["lr0"], k["genome"]["tau_anneal"]) not in first for k in imm)
+    assert len({niche(k["genome"]) for k in imm}) == 4
