@@ -1,0 +1,35 @@
+# Round 15   train through 2020-01-13   validate 2020-04-14 -> 2021-04-13
+agents scored 20, agents tried so far 170, validation noise (se of mean IC) about +/-0.066
+
+rank id     gen parent   IC now 3-rd avg rounds     lr0  tau_an kc_sp drive  fate
+   1 a0161    7 a0152    +0.049   +0.049      1   0.011   12404 0.048  0.90  KEPT
+   2 a0166    7 a0159    +0.046   +0.046      1   0.004   11026 0.047  1.40  KEPT
+   3 a0151    6 a0122    +0.030   +0.037      2   0.009   13703 0.058  1.39  KEPT
+   4 a0163    7 a0153    +0.035   +0.035      1   0.007   11045 0.022  1.11  KEPT
+   5 a0152    6 a0127    +0.034   +0.034      2   0.011   10314 0.048  1.11  KEPT
+   6 a0159    6 a0120    +0.045   +0.033      2   0.004   10714 0.063  1.40  KEPT
+   7 a0153    6 a0125    +0.040   +0.033      2   0.006   16666 0.036  1.11  KEPT
+   8 a0150    6 a0124    +0.042   +0.032      2   0.006    7238 0.066  0.90  KEPT
+   9 a0155    6 a0124    +0.039   +0.032      2   0.009    7238 0.060  1.20  KEPT
+  10 a0165    7 a0151    +0.032   +0.032      1   0.009   14437 0.050  1.39  KEPT
+  11 a0154    6 a0128    +0.025   +0.031      2   0.013   12699 0.057  1.31  culled
+  12 a0157    6 a0125    +0.009   +0.031      2   0.007   16666 0.046  0.90  culled
+  13 a0156    6 a0138    +0.014   +0.029      2   0.008   12957 0.047  1.02  culled
+  14 a0158    6 a0128    +0.013   +0.027      2   0.017   19246 0.057  1.38  culled
+  15 a0168    7 a0154    +0.021   +0.021      1   0.013   18491 0.062  1.37  culled
+  16 a0167    7 a0156    +0.014   +0.014      1   0.005   11929 0.047  1.02  culled
+  17 a0162    7 a0156    +0.013   +0.013      1   0.006   10346 0.040  1.02  culled
+  18 a0169    7 a0157    +0.008   +0.008      1   0.005   28501 0.046  0.90  culled
+  19 a0164    7 a0157    +0.008   +0.008      1   0.006   18335 0.045  0.90  culled
+  20 a0160    7 a0158    +0.005   +0.005      1   0.017   19246 0.057  1.76  culled
+
+Controls on the same validation window (no learning from this window):
+  ridge                IC +0.071
+  momentum 12-1        IC -0.125
+  reversal (-ret_1)    IC +0.025
+  random               IC -0.007
+  fly untrained (default) IC -0.022
+  Committee (kept last round) IC +0.030   (its 10 members average +0.029 individually)
+  Committee (all scored) IC +0.027   (its 20 members average +0.026 individually)
+
+Luck bar for the best of 170 agents: 0.210.  Best IC this round: +0.049  -> NOT above the bar: this round's ranking is mostly noise.

@@ -1,0 +1,34 @@
+{
+ "id": "a0010",
+ "genome": {
+  "kc_sparsity": 0.06661973363857383,
+  "kc_drive": 2.8470245614425216,
+  "w_kc_mbon": 0.08964939619611934,
+  "tau_plastic": 18.014428520048376,
+  "lr0": 0.017314181437787332,
+  "tau_anneal": 10555.545308984896,
+  "kc_inputs": 17,
+  "wiring_seed": 1331898245
+ },
+ "parent": null,
+ "gen": 0,
+ "born_round": 0,
+ "last_round_done": 0,
+ "status": "culled",
+ "n_seen": 8000,
+ "trained_idx": 999,
+ "r_mean": 0.004532145083090808,
+ "r_var": 0.6358995043394613,
+ "history": [
+  {
+   "round": 0,
+   "ic": 0.03232851793144051,
+   "sd": 0.08488605705827423,
+   "n": 51
+  }
+ ],
+ "code_version": "v6-silent-guard-committee",
+ "inherited_weights": false,
+ "created": "2026-11-16T21:32:15",
+ "culled_round": 0
+}

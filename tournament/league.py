@@ -23,7 +23,7 @@ from env.portfolio import report
 from learning.ridge import fit_ridge, predict
 from tournament.data import GAP, Data, rank_ic
 from tournament.genome import default_genome, mutate, random_genome
-from tournament.groups import n_view, view_cols
+from tournament.groups import n_view, neighbor_set, niche, usable_sets, view_cols
 from tournament.store import Store
 
 CODE_VERSION = "v6-silent-guard-committee"
@@ -196,12 +196,42 @@ def summarize(data, scores_by_idx):
 
 
 # ---------------------------------------------------------------- selection and breeding
+def choose_keep(elig, cfg):
+    """elig sorted best first -> (keep, culled). Default: the top `keep` by score. With cfg niching (diverse leagues): first the best fly
+    of every feature slice that scores at least the median (so one slice cannot crowd the others out), then the best of the rest with
+    at most niche_cap flies per slice, then, if still short, simply the best of what is left."""
+    k = cfg["keep"]
+    if not cfg.get("niching"):
+        return elig[:k], elig[k:]
+    scores = [sel_score(a) for a in elig]
+    med = float(np.median(scores)) if scores else 0.0
+    keep, count = [], {}
+    for a, s in zip(elig, scores):
+        n = niche(a["genome"])
+        if len(keep) < k and n not in count and s >= med and s > -9.0:
+            keep.append(a)
+            count[n] = 1
+    cap = int(cfg.get("niche_cap", 3))
+    for a in elig:
+        n = niche(a["genome"])
+        if len(keep) < k and a not in keep and count.get(n, 0) < cap:
+            keep.append(a)
+            count[n] = count.get(n, 0) + 1
+    for a in elig:
+        if len(keep) < k and a not in keep:
+            keep.append(a)
+    keep.sort(key=lambda a: -sel_score(a))
+    return keep, [a for a in elig if a not in keep]
+
+
 def select_and_breed(store, cfg, r):
-    """Idempotent: safe to re-run after an interruption (children are only created up to `pop`)."""
+    """Idempotent: safe to re-run after an interruption (children are only created up to `pop`).
+    Diverse leagues (cfg keys, all optional): niching (see choose_keep), immigrants = how many of the children are brand-new random flies
+    (their slice is one of the least represented among the kept flies), p_struct = chance that a child changes its feature slice."""
     rng = np.random.default_rng([cfg["seed"], r])
     elig = [a for a in store.alive() if a["born_round"] <= r and a["last_round_done"] == r]
     elig.sort(key=lambda a: -sel_score(a))
-    keep, culled = elig[:cfg["keep"]], elig[cfg["keep"]:]
+    keep, culled = choose_keep(elig, cfg)
     for a in culled:
         a["status"] = "culled"
         a["culled_round"] = r
@@ -210,17 +240,42 @@ def select_and_breed(store, cfg, r):
     need = cfg["pop"] - len(store.alive())
     w = np.arange(len(keep), 0, -1, dtype=float)
     kids = []
-    for _ in range(max(0, need)):
-        parent = keep[int(rng.choice(len(keep), p=w / w.sum()))]
-        inherit = bool(rng.random() < 0.7) and store.load_weights(parent["id"]) is not None
+    n_imm = min(int(cfg.get("immigrants", 0)), max(0, need))
+    p_struct = float(cfg.get("p_struct", 0.0))
+    feats = cfg.get("feats")
+    for j in range(max(0, need)):
         st = store.load_state()
         cid = f"a{st['next_id']:04d}"
         st["next_id"] += 1
         st["trials"] += 1
         store.save_state(st)
-        child = new_record(cid, mutate(parent["genome"], rng, rewire=not inherit, freeze_init=inherit,
-                                      n_obs=n_view(parent["genome"], cfg["feats"]) if parent["genome"].get("groups") else cfg.get("n_obs", 13)),
-                           born_round=r + 1, parent=parent["id"], gen=parent["gen"] + 1, inherited=inherit)
+        if j < n_imm:                                       # immigrant: a fresh random fly, no parent, no inherited weights
+            slice_ = None
+            if cfg.get("diverse") and feats:
+                sets = usable_sets(feats)
+                held = {s: sum(niche(a["genome"]) == s for a in keep) for s in map(tuple, sets)}
+                low = [s for s, c in held.items() if c == min(held.values())]
+                slice_ = low[int(rng.integers(len(low)))]
+            g = random_genome(rng, cfg.get("n_obs", 13), feats=feats, diverse=bool(cfg.get("diverse")), groups=slice_)
+            child = new_record(cid, g, born_round=r + 1, parent=None, gen=0, inherited=False)
+            child["immigrant"] = True
+            store.save_agent(child)
+            kids.append(child)
+            continue
+        parent = keep[int(rng.choice(len(keep), p=w / w.sum()))]
+        inherit = bool(rng.random() < 0.7) and store.load_weights(parent["id"]) is not None
+        g0 = parent["genome"]
+        if p_struct > 0 and g0.get("groups") and feats and rng.random() < p_struct:     # structural mutation: a new feature slice
+            g1 = dict(g0)
+            g1["groups"] = neighbor_set(g0["groups"], rng, feats)
+            nv = n_view(g1, feats)
+            g1["kc_inputs"] = int(min(g1["kc_inputs"], nv))
+            gen_ = mutate(g1, rng, rewire=True, freeze_init=False, n_obs=nv)
+            inherit = False                                   # the trained weights belong to the old inputs
+        else:
+            gen_ = mutate(g0, rng, rewire=not inherit, freeze_init=inherit,
+                          n_obs=n_view(g0, feats) if g0.get("groups") else cfg.get("n_obs", 13))
+        child = new_record(cid, gen_, born_round=r + 1, parent=parent["id"], gen=parent["gen"] + 1, inherited=inherit)
         if inherit:
             store.save_weights(cid, store.load_weights(parent["id"]))
             for k in ("n_seen", "trained_idx", "r_mean", "r_var"):
@@ -308,7 +363,8 @@ def run_round(store, cfg, data, workers):
     (store.root / "LEADERBOARD.md").write_text(text)
     (store.root / "rounds" / f"leaderboard_{r:02d}.txt").write_text(text)
     print("\n" + text)
-    print(f"\n{len(culled)} culled, {len(kids)} new children ({sum(k['inherited_weights'] for k in kids)} inherit weights). "
+    print(f"\n{len(culled)} culled, {len(kids)} new children ({sum(k['inherited_weights'] for k in kids)} inherit weights, "
+          f"{sum(bool(k.get('immigrant')) for k in kids)} immigrants). "
           f"round took {time.time() - t0:.0f}s", flush=True)
     st = store.load_state()
     st["round"] = r + 1

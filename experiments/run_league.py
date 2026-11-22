@@ -36,6 +36,9 @@ def main():
                     "the train/validation gap becomes the longest horizon")
     ap.add_argument("--sectors", default="", help="path of universe/constituents.csv: makes the label sector-neutral (removed names go in 'unknown')")
     ap.add_argument("--diverse", action="store_true", help="v8: every fly sees only a random slice of the feature groups (price / risk / fundamentals)")
+    ap.add_argument("--immigrants", type=int, default=None, help="children per round that are brand-new random flies (default 4 with --diverse, else 0)")
+    ap.add_argument("--p-struct", type=float, default=None, help="chance a child changes its feature slice (default 0.25 with --diverse, else 0)")
+    ap.add_argument("--niche-cap", type=int, default=3, help="most kept flies per feature slice after every slice's best is kept (--diverse)")
     ap.add_argument("--train-days", type=int, default=1000, help="initial training window (dates)")
     ap.add_argument("--val-days", type=int, default=252, help="validation window per round (dates)")
     ap.add_argument("--holdout", type=int, default=500, help="final untouched dates")
@@ -73,7 +76,9 @@ def main():
                    warm_ms=a.warm_ms, seed=a.seed, panel=a.panel, neurons=a.neurons, edges=a.edges,
                    label=a.label, sectors=a.sectors)
         if a.diverse:
-            cfg.update(diverse=True, feats=list(feats))
+            cfg.update(diverse=True, feats=list(feats), niching=True, niche_cap=a.niche_cap)
+        cfg.update(immigrants=a.immigrants if a.immigrants is not None else (4 if a.diverse else 0),
+                   p_struct=a.p_struct if a.p_struct is not None else (0.25 if a.diverse else 0.0))
         init_league(store, cfg)
         print(f"created league in {a.root}: {a.pop} random flies (keep {a.keep})")
     cfg = store.load_config()

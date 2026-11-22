@@ -1,0 +1,19 @@
+{
+ "n_obs": 25,
+ "root": "league_v7",
+ "pop": 20,
+ "keep": 10,
+ "train_days": 1000,
+ "val_days": 252,
+ "holdout": 500,
+ "stocks_per_day": 8,
+ "score_every": 5,
+ "sim_ms": 20,
+ "warm_ms": 15,
+ "seed": 0,
+ "panel": "data_fundamentals/panel_hybrid.parquet",
+ "neurons": "data/mb_neurons.csv",
+ "edges": "data/mb_edges.csv",
+ "label": "5+21+63",
+ "sectors": "data_fundamentals/universe/sectors.csv"
+}

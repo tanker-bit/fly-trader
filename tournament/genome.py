@@ -26,7 +26,7 @@ def kc_inputs_bounds(n_obs: int = 13) -> tuple[int, int]:
     """Each KC samples `kc_inputs` of the `n_obs` features, so a given feature (or a pair of them, which XOR-like
     interactions need) is seen by a share of KCs that shrinks as n_obs grows. Let the upper bound grow with n_obs
     (13 inputs -> 3..12, 24 inputs -> 3..16)."""
-    return 3, max(12, int(round(2 * n_obs / 3)))
+    return 3, min(n_obs, max(12, int(round(2 * n_obs / 3))))      # a KC cannot sample more inputs than the fly sees
 
 
 def default_genome() -> dict:
@@ -42,14 +42,14 @@ def _back(t, kind):
     return math.exp(t) if kind == "log" else t
 
 
-def random_genome(rng, n_obs: int = 13, feats=None, diverse: bool = False) -> dict:
+def random_genome(rng, n_obs: int = 13, feats=None, diverse: bool = False, groups=None) -> dict:
     """diverse=True (needs the feature names): the fly also gets a random `groups` gene, the slice of features it can see, and its
     kc_inputs bounds follow the number of features it sees. Default: exactly the v7 genome (no groups gene, same random draws)."""
     g = {k: float(min(hi, max(lo, _back(rng.uniform(_fwd(lo, kind), _fwd(hi, kind)), kind))))
          for k, (lo, hi, kind) in SCALARS.items()}
     if diverse and feats is not None:
         from tournament.groups import n_view, random_groups
-        g["groups"] = random_groups(rng, feats)
+        g["groups"] = list(groups) if groups is not None else random_groups(rng, feats)      # `groups` forces the slice (immigrants)
         n_obs = n_view(g, feats)
     lo_k, hi_k = kc_inputs_bounds(n_obs)
     g["kc_inputs"] = int(rng.integers(lo_k, hi_k + 1))

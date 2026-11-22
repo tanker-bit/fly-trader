@@ -46,6 +46,20 @@ def n_view(genome: dict, feats) -> int:
     return len(feats) if cols is None else len(cols)
 
 
+def niche(genome: dict) -> tuple:
+    """The feature slice as a hashable key; a fly without a `groups` gene is the 'all' niche."""
+    return tuple(genome.get("groups") or ("all",))
+
+
+def neighbor_set(groups, rng, feats) -> list:
+    """A usable slice that differs from `groups` by exactly one group added or removed (any other usable slice if none is that close)."""
+    cur = set(groups)
+    sets = usable_sets(feats)
+    near = [s for s in sets if len(cur ^ set(s)) == 1]
+    pool = near or [s for s in sets if set(s) != cur] or sets
+    return list(pool[int(rng.integers(len(pool)))])
+
+
 def random_groups(rng, feats) -> list:
     sets = usable_sets(feats)
     return list(sets[int(rng.integers(len(sets)))])

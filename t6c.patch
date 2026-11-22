@@ -1,0 +1,170 @@
+diff --git a/accounts/league_report.py b/accounts/league_report.py
+index 2753e24..a9acb24 100644
+--- a/accounts/league_report.py
++++ b/accounts/league_report.py
+@@ -106,7 +106,7 @@ def main():
+     cfg = store.load_config()
+     t0 = time.time()
+     print("loading panel (same slow start as run_league, runs once)...", flush=True)
+-    data = Data(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"])
++    data = Data.from_cfg(cfg)
+     print(f"panel loaded in {time.time() - t0:.0f}s", flush=True)
+     c, v0, v1 = data.round_geometry(a.round)
+     print(f"round {a.round}: {data.dates[v0].date()} -> {data.dates[v1 - 1].date()}  "
+diff --git a/accounts/rebuild_scores.py b/accounts/rebuild_scores.py
+index e46fa10..873fda3 100644
+--- a/accounts/rebuild_scores.py
++++ b/accounts/rebuild_scores.py
+@@ -24,7 +24,7 @@ def main():
+     a = ap.parse_args()
+     store = Store(a.root)
+     cfg = store.load_config()
+-    data = Data(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"])
++    data = Data.from_cfg(cfg)
+     c, v0, v1 = data.round_geometry(a.round)
+     sdir = store.root / "rounds" / "scores"
+     sdir.mkdir(parents=True, exist_ok=True)
+diff --git a/experiments/run_league.py b/experiments/run_league.py
+index a463792..84f6c9f 100644
+--- a/experiments/run_league.py
++++ b/experiments/run_league.py
+@@ -32,6 +32,9 @@ def main():
+     # settings used only when the league is first created
+     ap.add_argument("--pop", type=int, default=20)
+     ap.add_argument("--keep", type=int, default=10)
++    ap.add_argument("--label", default="21", help="training label horizon(s) in trading days: 21 (default), 63, or a blend like 5+21+63; "
++                    "the train/validation gap becomes the longest horizon")
++    ap.add_argument("--sectors", default="", help="path of universe/constituents.csv: makes the label sector-neutral (removed names go in 'unknown')")
+     ap.add_argument("--train-days", type=int, default=1000, help="initial training window (dates)")
+     ap.add_argument("--val-days", type=int, default=252, help="validation window per round (dates)")
+     ap.add_argument("--holdout", type=int, default=500, help="final untouched dates")
+@@ -60,10 +63,13 @@ def main():
+         health_check(a)
+         return
+     if not store.has_config():
+-        n_obs = len(Data(a.panel, a.train_days, a.val_days, a.holdout).feats)
++        from tournament.labels import load_sectors
++        sec = load_sectors(a.sectors) if a.sectors else None
++        n_obs = len(Data(a.panel, a.train_days, a.val_days, a.holdout, label=a.label, sectors=sec).feats)
+         cfg = dict(n_obs=n_obs, root=a.root, pop=a.pop, keep=a.keep, train_days=a.train_days, val_days=a.val_days,
+                    holdout=a.holdout, stocks_per_day=a.stocks_per_day, score_every=a.score_every, sim_ms=a.sim_ms,
+-                   warm_ms=a.warm_ms, seed=a.seed, panel=a.panel, neurons=a.neurons, edges=a.edges)
++                   warm_ms=a.warm_ms, seed=a.seed, panel=a.panel, neurons=a.neurons, edges=a.edges,
++                   label=a.label, sectors=a.sectors)
+         init_league(store, cfg)
+         print(f"created league in {a.root}: {a.pop} random flies (keep {a.keep})")
+     cfg = store.load_config()
+diff --git a/tournament/data.py b/tournament/data.py
+index ae16414..4b58dd9 100644
+--- a/tournament/data.py
++++ b/tournament/data.py
+@@ -12,6 +12,7 @@ from scipy.stats import rankdata
+ 
+ from env.features import feature_columns
+ from experiments.backtest import MARKET_COLS
++from tournament.labels import load_sectors, make_labels
+ 
+ HORIZON = 21
+ GAP = 21
+@@ -47,10 +48,14 @@ def rank_ic(s, y) -> float:
+ class Data:
+     """dates[i] / day[i] = (tickers, X, y21) for the i-th labelled date. The last `holdout` dates are never used by the league."""
+ 
+-    def __init__(self, panel_path, train_days, val_days, holdout, min_stocks=10):
++    def __init__(self, panel_path, train_days, val_days, holdout, min_stocks=10, label="21", sectors=None):
+         panel = load_panel(panel_path)
+         self.feats = [c for c in feature_columns(panel) if c not in MARKET_COLS]
+-        y = monthly_labels(panel)
++        if str(label) == "21" and not sectors:
++            y, self.gap = monthly_labels(panel), HORIZON          # exactly the original label and gap
++        else:
++            y, self.gap = make_labels(panel, label, sectors)
++        self.label = str(label)
+         ok = y.notna()
+         sub = panel.loc[ok, self.feats].copy()
+         sub["_y"] = y[ok].to_numpy()
+@@ -65,14 +70,20 @@ class Data:
+         self.train_days, self.val_days, self.holdout = train_days, val_days, holdout
+         self.i_mom, self.i_rev = self.feats.index("mom_12_1"), self.feats.index("ret_1")
+ 
++    @classmethod
++    def from_cfg(cls, cfg):
++        """Build from a league config. Old configs without `label` / `sectors` give the original 21-day, market-neutral label."""
++        sec = load_sectors(cfg["sectors"]) if cfg.get("sectors") else None
++        return cls(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"], label=cfg.get("label", "21"), sectors=sec)
++
+     @property
+     def n_usable(self):
+         return len(self.dates) - self.holdout
+ 
+     def round_geometry(self, r):
+-        """(c, v0, v1): train on dates[..c]; validate on dates[v0:v1] with v0 = c + GAP."""
++        """(c, v0, v1): train on dates[..c]; validate on dates[v0:v1] with v0 = c + gap (gap = longest label horizon, 21 by default)."""
+         c = self.train_days - 1 + r * self.val_days
+-        return c, c + GAP, c + GAP + self.val_days
++        return c, c + self.gap, c + self.gap + self.val_days
+ 
+     def round_valid(self, r):
+         return self.round_geometry(r)[2] <= self.n_usable
+diff --git a/tournament/league.py b/tournament/league.py
+index bbb4c42..c100720 100644
+--- a/tournament/league.py
++++ b/tournament/league.py
+@@ -92,7 +92,7 @@ def train_through(ag, rec, data, upto, cfg):
+ def init_worker(cfg):
+     G["cfg"] = cfg
+     G["store"] = Store(cfg["root"])
+-    G["data"] = Data(cfg["panel"], cfg["train_days"], cfg["val_days"], cfg["holdout"])
++    G["data"] = Data.from_cfg(cfg)
+ 
+ 
+ def run_agent_round(aid, r):
+@@ -121,8 +121,8 @@ def run_agent_final(aid):
+     rec = store.load_agent(aid)
+     h0 = data.n_usable
+     ag = load_agent_obj(rec, store, cfg, data)
+-    train_through(ag, rec, data, h0 - 1 - GAP, cfg)
+-    return aid, {i: fly_scores(ag, data.day[i][1]) for i in range(h0, len(data.dates), GAP)}
++    train_through(ag, rec, data, h0 - 1 - data.gap, cfg)
++    return aid, {i: fly_scores(ag, data.day[i][1]) for i in range(h0, len(data.dates), data.gap)}
+ 
+ 
+ def _map(fn, jobs, cfg, workers):
+@@ -230,7 +230,7 @@ def leaderboard_text(store, data, cfg, r, controls, keep_ids, committee=None):
+     rows = [a for a in (store.load_agent(i) for i in store.agent_ids())
+             if a["history"] and a["history"][-1]["round"] == r]
+     rows.sort(key=lambda a: -sel_score(a))
+-    n_eff = cfg["val_days"] / GAP
++    n_eff = cfg["val_days"] / data.gap
+     sd = float(np.mean([a["history"][-1]["sd"] for a in rows])) if rows else 0.0
+     n_tried = sum(1 for i in store.agent_ids() if store.load_agent(i)["born_round"] <= r)   # agents scored up to this round
+     bar = sd * np.sqrt(2 * np.log(max(n_tried, 2))) / np.sqrt(n_eff)
+@@ -314,8 +314,8 @@ def run_final(store, cfg, data, workers, force=False):
+     h0 = data.n_usable
+     agents = sorted(store.alive(), key=lambda a: -sel_score(a))[:cfg["keep"]]
+     print(f"FINAL HOLDOUT {data.dates[h0].date()} -> {data.dates[-1].date()}  ({len(data.dates) - h0} days; "
+-          f"decisions every {GAP} days). Scoring {len(agents)} agents.", flush=True)
+-    idxs = list(range(h0, len(data.dates), GAP))
++          f"decisions every {data.gap} days). Scoring {len(agents)} agents.", flush=True)
++    idxs = list(range(h0, len(data.dates), data.gap))
+     days = data.dates[h0:]
+ 
+     def frame(by_idx):
+@@ -325,7 +325,7 @@ def run_final(store, cfg, data, workers, force=False):
+         return f
+ 
+     signals = {}
+-    cs = control_scores(data, idxs, h0 - 1 - GAP, np.random.default_rng([cfg["seed"], 999]))
++    cs = control_scores(data, idxs, h0 - 1 - data.gap, np.random.default_rng([cfg["seed"], 999]))
+     for k, v in cs.items():
+         signals[k] = frame(v)
+     signals["fly untrained (default)"] = frame(untrained_control(data, cfg, idxs))
+@@ -339,7 +339,7 @@ def run_final(store, cfg, data, workers, force=False):
+     buf = io.StringIO()
+     with contextlib.redirect_stdout(buf):
+         report(signals, data.fwd1.reindex(days), data.y_frame(range(h0, len(data.dates))).reindex(days),
+-               rebalances=(GAP,))
++               rebalances=(data.gap,))
+     out = ("=== FINAL HOLDOUT, monthly rebalance, long-short, net Sharpe at 0/5/10/20 bps ===\n" + buf.getvalue() +
+            f"\nVariants tried before this: {store.load_state()['trials']}. IC t-stats use non-overlapping monthly decisions "
+            f"({len(idxs)} of them): treat |t| < 2 as no evidence.")
