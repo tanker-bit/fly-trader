@@ -42,9 +42,15 @@ def _back(t, kind):
     return math.exp(t) if kind == "log" else t
 
 
-def random_genome(rng, n_obs: int = 13) -> dict:
+def random_genome(rng, n_obs: int = 13, feats=None, diverse: bool = False) -> dict:
+    """diverse=True (needs the feature names): the fly also gets a random `groups` gene, the slice of features it can see, and its
+    kc_inputs bounds follow the number of features it sees. Default: exactly the v7 genome (no groups gene, same random draws)."""
     g = {k: float(min(hi, max(lo, _back(rng.uniform(_fwd(lo, kind), _fwd(hi, kind)), kind))))
          for k, (lo, hi, kind) in SCALARS.items()}
+    if diverse and feats is not None:
+        from tournament.groups import n_view, random_groups
+        g["groups"] = random_groups(rng, feats)
+        n_obs = n_view(g, feats)
     lo_k, hi_k = kc_inputs_bounds(n_obs)
     g["kc_inputs"] = int(rng.integers(lo_k, hi_k + 1))
     g["wiring_seed"] = int(rng.integers(0, 2 ** 31 - 1))

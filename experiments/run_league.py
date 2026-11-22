@@ -35,6 +35,7 @@ def main():
     ap.add_argument("--label", default="21", help="training label horizon(s) in trading days: 21 (default), 63, or a blend like 5+21+63; "
                     "the train/validation gap becomes the longest horizon")
     ap.add_argument("--sectors", default="", help="path of universe/constituents.csv: makes the label sector-neutral (removed names go in 'unknown')")
+    ap.add_argument("--diverse", action="store_true", help="v8: every fly sees only a random slice of the feature groups (price / risk / fundamentals)")
     ap.add_argument("--train-days", type=int, default=1000, help="initial training window (dates)")
     ap.add_argument("--val-days", type=int, default=252, help="validation window per round (dates)")
     ap.add_argument("--holdout", type=int, default=500, help="final untouched dates")
@@ -65,11 +66,14 @@ def main():
     if not store.has_config():
         from tournament.labels import load_sectors
         sec = load_sectors(a.sectors) if a.sectors else None
-        n_obs = len(Data(a.panel, a.train_days, a.val_days, a.holdout, label=a.label, sectors=sec).feats)
+        feats = Data(a.panel, a.train_days, a.val_days, a.holdout, label=a.label, sectors=sec).feats
+        n_obs = len(feats)
         cfg = dict(n_obs=n_obs, root=a.root, pop=a.pop, keep=a.keep, train_days=a.train_days, val_days=a.val_days,
                    holdout=a.holdout, stocks_per_day=a.stocks_per_day, score_every=a.score_every, sim_ms=a.sim_ms,
                    warm_ms=a.warm_ms, seed=a.seed, panel=a.panel, neurons=a.neurons, edges=a.edges,
                    label=a.label, sectors=a.sectors)
+        if a.diverse:
+            cfg.update(diverse=True, feats=list(feats))
         init_league(store, cfg)
         print(f"created league in {a.root}: {a.pop} random flies (keep {a.keep})")
     cfg = store.load_config()

@@ -23,6 +23,7 @@ from env.portfolio import report
 from learning.ridge import fit_ridge, predict
 from tournament.data import GAP, Data, rank_ic
 from tournament.genome import default_genome, mutate, random_genome
+from tournament.groups import n_view, view_cols
 from tournament.store import Store
 
 CODE_VERSION = "v6-silent-guard-committee"
@@ -64,7 +65,7 @@ def fly_scores(ag, X):
 
 
 def load_agent_obj(rec, store, cfg, data):
-    ag = build_agent(rec["genome"], cfg, len(data.feats))
+    ag = build_agent(rec["genome"], cfg, n_view(rec["genome"], data.feats))     # = len(data.feats) unless the fly has a `groups` gene
     W = store.load_weights(rec["id"])
     if W is not None and W.shape == ag.syn.W.shape:
         ag.syn.W = W.astype(np.float64) * ag.mask
@@ -75,9 +76,12 @@ def load_agent_obj(rec, store, cfg, data):
 def train_through(ag, rec, data, upto, cfg):
     """Continue online counterfactual-dopamine training over dates (trained_idx, upto]."""
     g = rec["genome"]
+    cols = view_cols(g, data.feats)
     rng = np.random.default_rng([int(g["wiring_seed"]), rec["n_seen"]])
     for i in range(rec["trained_idx"] + 1, upto + 1):
         _, X, y = data.day[i]
+        if cols is not None:
+            X = X[:, cols]
         for j in rng.choice(len(X), size=min(cfg["stocks_per_day"], len(X)), replace=False):
             ag.syn.lr = g["lr0"] / (1.0 + rec["n_seen"] / g["tau_anneal"])
             ag.reset_state()
@@ -102,7 +106,8 @@ def run_agent_round(aid, r):
     ag = load_agent_obj(rec, store, cfg, data)
     t0 = time.time()
     train_through(ag, rec, data, c, cfg)
-    sc = {i: fly_scores(ag, data.day[i][1]) for i in range(v0, v1, cfg["score_every"])}
+    cols = view_cols(rec["genome"], data.feats)
+    sc = {i: fly_scores(ag, data.day[i][1] if cols is None else data.day[i][1][:, cols]) for i in range(v0, v1, cfg["score_every"])}
     ics = [rank_ic(sc[i], data.day[i][2]) for i in sc]
     sdir = store.root / "rounds" / "scores"            # kept so the round can score a committee of these agents
     sdir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +127,8 @@ def run_agent_final(aid):
     h0 = data.n_usable
     ag = load_agent_obj(rec, store, cfg, data)
     train_through(ag, rec, data, h0 - 1 - data.gap, cfg)
-    return aid, {i: fly_scores(ag, data.day[i][1]) for i in range(h0, len(data.dates), data.gap)}
+    cols = view_cols(rec["genome"], data.feats)
+    return aid, {i: fly_scores(ag, data.day[i][1] if cols is None else data.day[i][1][:, cols]) for i in range(h0, len(data.dates), data.gap)}
 
 
 def _map(fn, jobs, cfg, workers):
@@ -212,7 +218,8 @@ def select_and_breed(store, cfg, r):
         st["next_id"] += 1
         st["trials"] += 1
         store.save_state(st)
-        child = new_record(cid, mutate(parent["genome"], rng, rewire=not inherit, freeze_init=inherit, n_obs=cfg.get("n_obs", 13)),
+        child = new_record(cid, mutate(parent["genome"], rng, rewire=not inherit, freeze_init=inherit,
+                                      n_obs=n_view(parent["genome"], cfg["feats"]) if parent["genome"].get("groups") else cfg.get("n_obs", 13)),
                            born_round=r + 1, parent=parent["id"], gen=parent["gen"] + 1, inherited=inherit)
         if inherit:
             store.save_weights(cid, store.load_weights(parent["id"]))
@@ -234,13 +241,16 @@ def leaderboard_text(store, data, cfg, r, controls, keep_ids, committee=None):
     sd = float(np.mean([a["history"][-1]["sd"] for a in rows])) if rows else 0.0
     n_tried = sum(1 for i in store.agent_ids() if store.load_agent(i)["born_round"] <= r)   # agents scored up to this round
     bar = sd * np.sqrt(2 * np.log(max(n_tried, 2))) / np.sqrt(n_eff)
+    diverse = any(a["genome"].get("groups") for a in rows)
+    short = lambda g: "+".join(x[0] for x in g.get("groups", ())) if g.get("groups") else "all"
     L = [f"# Round {r}   train through {data.dates[c].date()}   validate {data.dates[v0].date()} -> {data.dates[v1 - 1].date()}",
          f"agents scored {len(rows)}, agents tried so far {n_tried}, validation noise (se of mean IC) about +/-{sd / np.sqrt(n_eff):.3f}",
-         "", f"{'rank':>4} {'id':<6}{'gen':>4} {'parent':<7}{'IC now':>8}{'3-rd avg':>9}{'rounds':>7}  {'lr0':>6}{'tau_an':>8}{'kc_sp':>6}{'drive':>6}  fate"]
+         "", f"{'rank':>4} {'id':<6}{'gen':>4} {'parent':<7}{'IC now':>8}{'3-rd avg':>9}{'rounds':>7}  {'lr0':>6}{'tau_an':>8}{'kc_sp':>6}{'drive':>6}" + (f"{'view':>7}" if diverse else "") + "  fate"]
     for k, a in enumerate(rows, 1):
         g = a["genome"]
         L.append(f"{k:>4} {a['id']:<6}{a['gen']:>4} {str(a['parent'] or '-'):<7}{a['history'][-1]['ic']:>+8.3f}{sel_score(a):>+9.3f}"
-                 f"{len(a['history']):>7}  {g['lr0']:>6.3f}{g['tau_anneal']:>8.0f}{g['kc_sparsity']:>6.3f}{g['kc_drive']:>6.2f}  "
+                 f"{len(a['history']):>7}  {g['lr0']:>6.3f}{g['tau_anneal']:>8.0f}{g['kc_sparsity']:>6.3f}{g['kc_drive']:>6.2f}"
+                 + (f"{short(g):>7}" if diverse else "") + "  "
                  f"{'KEPT' if a['id'] in keep_ids else 'culled'}{'  SILENT' if a['history'][-1].get('silent') else ''}")
     L += ["", "Controls on the same validation window (no learning from this window):"]
     for name, v in controls.items():
@@ -265,7 +275,8 @@ def init_league(store, cfg):
         st["next_id"] += 1
         st["trials"] += 1
         store.save_state(st)
-        store.save_agent(new_record(aid, random_genome(rng, cfg.get('n_obs', 13)), born_round=0))
+        store.save_agent(new_record(aid, random_genome(rng, cfg.get('n_obs', 13), feats=cfg.get("feats"), diverse=bool(cfg.get("diverse"))),
+                                    born_round=0))
 
 
 def run_round(store, cfg, data, workers):

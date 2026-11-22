@@ -59,7 +59,12 @@ def make_labels(panel: pd.DataFrame, spec="21", sectors: dict | None = None) -> 
 
 
 def load_sectors(path) -> dict:
-    """ticker -> sector from universe/constituents.csv (columns symbol, sector). Removed names have no sector."""
+    """ticker -> sector from a csv with columns `symbol` and `sector` (universe/sectors.csv from experiments.fetch_sectors, or a
+    constituents.csv that has a sector column). Removed names have no sector and fall in the 'unknown' group."""
     df = pd.read_csv(path)
-    col = "sector" if "sector" in df.columns else "sub_industry"
-    return {str(r.symbol): str(getattr(r, col)) for r in df.itertuples() if pd.notna(getattr(r, col))}
+    if "symbol" not in df.columns or "sector" not in df.columns:
+        raise SystemExit(f"{path} has columns {list(df.columns)} but needs `symbol` and `sector`. Your constituents.csv was saved before "
+                         f"sectors were kept: run  python -m experiments.fetch_sectors --root data_fundamentals --user-agent \"Name email\"  "
+                         f"and pass --sectors data_fundamentals/universe/sectors.csv")
+    df = df[df["sector"].notna() & (df["sector"].astype(str).str.strip() != "")]
+    return {str(r.symbol): str(r.sector) for r in df.itertuples()}
