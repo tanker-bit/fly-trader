@@ -45,11 +45,11 @@ def load_all_prices(root: Path, start="2000-01-01", full=False):
     return (adj, cs, vol, spl, src) if full else (adj, vol, src)
 
 
-def raw_fundamentals(root: Path, ciks: dict, adj, close_split, splits, lag_days=1) -> dict:
+def raw_fundamentals(root: Path, ciks: dict, adj, close_split, splits, lag_days=1, extended=False) -> dict:
     """Point-in-time raw metrics for every ticker that has a CIK and SEC facts; all others stay NaN (price-only rows)."""
     from env import fundamentals as fnd
     dates, tick = adj.index, list(adj.columns)
-    raw = {m: pd.DataFrame(np.nan, index=dates, columns=tick) for m in fnd.METRICS}
+    raw = {m: pd.DataFrame(np.nan, index=dates, columns=tick) for m in fnd.METRICS + (fnd.METRICS_V2 if extended else [])}
     n = 0
     for t in tick:
         if t not in ciks:
@@ -58,7 +58,7 @@ def raw_fundamentals(root: Path, ciks: dict, adj, close_split, splits, lag_days=
         if ev is None:
             continue
         n += 1
-        for m, v in fnd.align_metrics(ev, dates, close_split[t], splits.get(t)).items():
+        for m, v in fnd.align_metrics(ev, dates, close_split[t], splits.get(t), extended=extended).items():
             raw[m][t] = v
     print(f"  fundamentals aligned for {n} of {len(tick)} tickers; the rest are price-only")
     return raw

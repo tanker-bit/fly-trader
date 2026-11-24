@@ -50,6 +50,11 @@ CONCEPTS: dict[str, list[tuple[str, str, str]]] = {
     "equity": [("us-gaap", "StockholdersEquity", "USD"),
                ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "USD")],
     "assets": [("us-gaap", "Assets", "USD")],
+    "opinc": [("us-gaap", "OperatingIncomeLoss", "USD")],
+    "interest": [("us-gaap", "InterestExpense", "USD"), ("us-gaap", "InterestExpenseDebt", "USD")],
+    "cur_assets": [("us-gaap", "AssetsCurrent", "USD")],
+    "cur_liab": [("us-gaap", "LiabilitiesCurrent", "USD")],
+    "repurch": [("us-gaap", "PaymentsForRepurchaseOfCommonStock", "USD")],
     "debt_total": [("us-gaap", "LongTermDebt", "USD")],
     "debt_nc": [("us-gaap", "LongTermDebtNoncurrent", "USD")],
     "debt_cur": [("us-gaap", "LongTermDebtCurrent", "USD"), ("us-gaap", "DebtCurrent", "USD")],
@@ -57,6 +62,9 @@ CONCEPTS: dict[str, list[tuple[str, str, str]]] = {
                ("us-gaap", "WeightedAverageNumberOfDilutedSharesOutstanding", "shares")],
 }
 FLOWS = ("ni", "rev", "cogs", "gp", "ocf", "capex", "eps")
+# Second set of metrics (extended=True in align_metrics). Kept apart from METRICS so the original panels are unchanged.
+METRICS_V2 = ["gp_to_assets", "op_margin", "margin_change", "asset_growth", "debt_to_assets", "interest_cover",
+              "current_ratio", "sue", "buyback_yield"]
 METRICS = ["earnings_yield", "book_to_price", "fcf_yield", "roe", "roa", "gross_margin", "rev_growth_yoy",
            "eps_growth_yoy", "debt_to_equity", "accruals", "days_since_filing"]
 
@@ -229,12 +237,51 @@ def _instant(S, E, V):
     return V[i], E[i]
 
 
+def _instant_prev(S, E, V, tol: int = 20):
+    """Value of an instant item about one year before its latest date (within +-tol days), else NaN."""
+    target = E.max() - 365
+    ok = np.abs(E - target) <= tol
+    if not ok.any():
+        return np.nan
+    i = np.flatnonzero(ok)[np.argmin(np.abs(E[ok] - target))]
+    return V[i]
+
+
+def _sue(S, E, V, min_prior: int = 4, max_prior: int = 8):
+    """Standardised unexpected earnings from the company's own history (no analyst estimates): the latest year-on-year change in
+    quarterly EPS, minus the mean of the previous (up to 8) such changes, divided by their standard deviation.
+    Only quarters reported as ~90-day facts are used (a 10-K reports the year, so fourth quarters are not there)."""
+    d = E - S
+    q = (d >= 80) & (d <= 100)
+    qE, qV = E[q], V[q]
+    if len(qE) < min_prior + 2:
+        return np.nan
+    order = np.argsort(qE, kind="stable")
+    qE, qV = qE[order], qV[order]
+    ch_e, ch = [], []
+    for i in range(len(qE)):
+        j = np.flatnonzero(np.abs(qE - (qE[i] - 365)) <= 10)
+        if len(j):
+            ch_e.append(qE[i])
+            ch.append(qV[i] - qV[j[0]])
+    if len(ch) < min_prior + 1:
+        return np.nan
+    latest, prior = ch[-1], np.array(ch[-1 - max_prior:-1])
+    sd = prior.std(ddof=1) if len(prior) > 1 else 0.0
+    return (latest - prior.mean()) / sd if sd > 1e-9 else np.nan
+
+
 def snapshot(arrs, F: int) -> dict:
     """Everything an investor could compute from facts filed on or before day F (days since 1970-01-01)."""
     g = {c: _asof(arrs.get(c), F) for c in CONCEPTS}
     out = dict(filed=F)
-    for c in ("ni", "rev", "cogs", "gp", "ocf", "capex"):
+    for c in ("ni", "rev", "cogs", "gp", "ocf", "capex", "opinc", "interest", "repurch"):
         out[c + "_ttm"] = _ttm(*g[c])[0] if g[c] is not None else np.nan
+    for c in ("cur_assets", "cur_liab"):
+        out[c] = _instant(*g[c])[0] if g[c] is not None else np.nan
+    out["assets_prev"] = _instant_prev(*g["assets"]) if g["assets"] is not None else np.nan
+    out["opinc_cur"], out["opinc_prev"] = _yoy(*g["opinc"]) if g["opinc"] is not None else (np.nan, np.nan)
+    out["sue"] = _sue(*g["eps"]) if g["eps"] is not None else np.nan
     for c in ("equity", "assets", "shares"):
         out[c] = _instant(*g[c])[0] if g[c] is not None else np.nan
     out["rev_cur"], out["rev_prev"] = _yoy(*g["rev"]) if g["rev"] is not None else (np.nan, np.nan)
@@ -275,7 +322,7 @@ def split_after(dates: pd.DatetimeIndex, splits: pd.Series | None) -> np.ndarray
 
 
 def align_metrics(events: pd.DataFrame, dates: pd.DatetimeIndex, close_split: pd.Series,
-                  splits: pd.Series | None = None) -> dict[str, np.ndarray]:
+                  splits: pd.Series | None = None, extended: bool = False) -> dict[str, np.ndarray]:
     """Raw (unranked) fundamental metrics on each trading date, using the latest event whose `avail` <= that date.
 
     `close_split` is the Yahoo 'Close' (split-adjusted, NOT dividend-adjusted). Market value at the event is
@@ -284,7 +331,8 @@ def align_metrics(events: pd.DataFrame, dates: pd.DatetimeIndex, close_split: pd
     """
     n = len(dates)
     nan = np.full(n, np.nan)
-    out = {m: nan.copy() for m in METRICS}
+    names = METRICS + (METRICS_V2 if extended else [])
+    out = {m: nan.copy() for m in names}
     if events is None or len(events) == 0:
         return out
     cf = close_split.reindex(dates).ffill().to_numpy(float)
@@ -300,6 +348,9 @@ def align_metrics(events: pd.DataFrame, dates: pd.DatetimeIndex, close_split: pd
     has = k >= 0
     kk = np.where(has, k, 0)
     ev = {c: events[c].to_numpy(float)[kk] for c in events.columns if events[c].dtype.kind in "fi"}
+    if extended:
+        for c in ("opinc_ttm", "interest_ttm", "repurch_ttm", "cur_assets", "cur_liab", "assets_prev", "opinc_cur", "opinc_prev", "sue"):
+            ev.setdefault(c, np.full(n, np.nan))               # events cached by an older version lack these columns
     mcap = mF[kk] * cf / cF[kk]
     with np.errstate(divide="ignore", invalid="ignore"):
         pos = lambda x: np.where(x > 0, x, np.nan)
@@ -316,6 +367,20 @@ def align_metrics(events: pd.DataFrame, dates: pd.DatetimeIndex, close_split: pd
             debt_to_equity=ev["debt"] / pos(ev["equity"]),
             accruals=(ev["ni_ttm"] - ev["ocf_ttm"]) / pos(ev["assets"]),
         )
+    if extended:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pos = lambda x: np.where(x > 0, x, np.nan)
+            res.update(
+                gp_to_assets=gp / pos(ev["assets"]),
+                op_margin=ev["opinc_ttm"] / pos(ev["rev_ttm"]),
+                margin_change=ev["opinc_cur"] / pos(ev["rev_cur"]) - ev["opinc_prev"] / pos(ev["rev_prev"]),
+                asset_growth=ev["assets"] / pos(ev["assets_prev"]) - 1.0,
+                debt_to_assets=ev["debt"] / pos(ev["assets"]),
+                interest_cover=ev["opinc_ttm"] / pos(ev["interest_ttm"]),
+                current_ratio=ev["cur_assets"] / pos(ev["cur_liab"]),
+                sue=ev["sue"],
+                buyback_yield=ev["repurch_ttm"] / pos(mcap),
+            )
     filed_days = events["filed"].to_numpy("datetime64[D]").astype("int64")[kk]
     res["days_since_filing"] = dates.to_numpy("datetime64[D]").astype("int64") - filed_days
     for m, v in res.items():
@@ -327,7 +392,7 @@ def events_for_cik(sec_dir, cik: int, lag_days: int = 1, refresh: bool = False) 
     """Cached events table for one company (None if it has no usable XBRL facts)."""
     sec_dir = Path(sec_dir)
     (sec_dir / "events").mkdir(parents=True, exist_ok=True)
-    cache = sec_dir / "events" / f"CIK{cik:010d}_lag{lag_days}.pkl"
+    cache = sec_dir / "events" / f"CIK{cik:010d}_lag{lag_days}_v2.pkl"       # v2: events also hold the extended metric inputs
     if cache.exists() and not refresh:
         return pd.read_pickle(cache)
     raw = sec_dir / "raw" / f"CIK{cik:010d}.json"

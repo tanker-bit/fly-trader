@@ -29,6 +29,18 @@ def _xs_rank(df: pd.DataFrame) -> pd.DataFrame:
     return r.where(df.notna().sum(axis=1) >= MIN_STOCKS_PER_DAY)
 
 
+def sector_xs_rank(df: pd.DataFrame, sector: dict, min_group: int = 6, unknown: str = "unknown") -> pd.DataFrame:
+    """Cross-sectional rank in [-1, 1] WITHIN each sector on every date (tickers missing from `sector` form their own 'unknown' group).
+    A group with fewer than `min_group` stocks that day gets NaN, so a stock is never ranked against two or three peers."""
+    groups = pd.Series({t: sector.get(t, unknown) for t in df.columns})
+    out = pd.DataFrame(np.nan, index=df.index, columns=df.columns)
+    for g, cols in groups.groupby(groups).groups.items():
+        sub = df[list(cols)]
+        r = sub.rank(axis=1, pct=True) * 2.0 - 1.0
+        out[list(cols)] = r.where(sub.notna().sum(axis=1) >= min_group, np.nan)
+    return out
+
+
 def _rolling_z(s: pd.Series) -> pd.Series:
     m = s.rolling(ZWIN, min_periods=ZWIN // 2).mean()
     sd = s.rolling(ZWIN, min_periods=ZWIN // 2).std()
