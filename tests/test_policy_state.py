@@ -157,6 +157,28 @@ def test_file_round_trip_and_safety(tmp_path):
         load_state(path)
 
 
+def test_saving_waits_out_a_brief_windows_file_lock(tmp_path, monkeypatch):
+    """Seen on Windows: replacing a file written a moment ago failed with 'Access is denied' (a scanner held it)."""
+    import accounts.policy_state as ps
+    real, calls, naps = ps.os.replace, [], []
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) <= 3:
+            raise PermissionError(5, "Access is denied")
+        real(src, dst)
+
+    monkeypatch.setattr(ps.os, "replace", flaky)
+    src, dst = tmp_path / "a.tmp", tmp_path / "a.json"
+    src.write_text("x")
+    ps._replace(src, dst, sleep=naps.append)
+    assert dst.read_text() == "x" and len(calls) == 4 and len(naps) == 3
+
+    monkeypatch.setattr(ps.os, "replace", lambda s, d: (_ for _ in ()).throw(PermissionError(5, "Access is denied")))
+    with pytest.raises(PermissionError):
+        ps._replace(src, dst, tries=3, sleep=lambda s: None)                               # a real, lasting lock still fails
+
+
 def test_restore_refuses_a_state_from_the_future():
     px = world()
     pol = HoldPolicy(HoldParams(), px.iloc[:50])

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -141,8 +142,21 @@ def save_state(path, state: PolicyState) -> Path:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state.to_dict(), f, indent=1)
         f.write("\n")
-    os.replace(tmp, p)
+    _replace(tmp, p)
     return p
+
+
+def _replace(src: Path, dst: Path, tries: int = 20, wait: float = 0.05, sleep=time.sleep) -> None:
+    """os.replace, retried briefly on Windows' 'Access is denied': a virus scanner or the search indexer often holds a file that
+    was written a moment ago. Gives up (re-raises) after about 10 seconds in total."""
+    for n in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if n == tries - 1:
+                raise
+            sleep(wait * (n + 1))
 
 
 def load_state(path) -> PolicyState | None:

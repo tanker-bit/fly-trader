@@ -21,18 +21,20 @@ The copy's files are owned by the home Windows account, so git on the lab PC ref
 |---|---|---|---|
 | 1 | `.gitignore` | Rewritten (details below) | committed on `lab-work` |
 | 2 | `LAB_SESSION_HANDOVER.md` | this file | committed on `lab-work` |
-| 3 | `accounts/policy_state.py` | **new, V4a**: saves and restores `HoldPolicy`'s memory between daily runs (details below) | committed on `lab-work`, **NOT RUN** |
-| 4 | `tests/test_policy_state.py` | **new**: 9 tests for V4a | committed on `lab-work`, **NOT RUN** |
+| 3 | `accounts/policy_state.py` | **new, V4a**: saves and restores `HoldPolicy`'s memory between daily runs (details below) | committed on `lab-work`, tested |
+| 4 | `tests/test_policy_state.py` | **new**: 10 tests for V4a | committed on `lab-work`, tested |
 
 The lab commits hold lab work only. The 7 modified and 26 untracked files from home were deliberately left out (still uncommitted in the copy). Use Route A below.
 
 No existing source code, tests, data, the 3D dashboard or the Investopedia library folder were changed. No secrets were opened. `--final` was not run. No orders.
 
-### No Python on the lab PC: V4a is untested
+### Python on the lab PC and test results
 
-The lab PC has no Python (only the Microsoft Store placeholder). The official `python-3.15.2-amd64.exe` (signed by the Python Software Foundation) was downloaded with the user's approval, but installing failed twice the same way: the installer never saved its `core.msi` part to disk, then stopped with error 0x80070003 (path not found). That points to a lab policy or security tool; it was not worked around. The partial install was removed with the installer's own uninstall.
+The lab PC had no Python. The AI's own silent install of the official `python-3.15.2-amd64.exe` failed twice (the installer never saved its `core.msi` part; error 0x80070003). No lab policy was found to explain it; the likeliest cause is the AI's command sandbox. The user then installed it themselves from `cmd` and it worked:
+- Python 3.15.2 for this user only, not on PATH: `%LOCALAPPDATA%\Programs\Python\Python315`
+- a separate environment outside the repo: `D:\github-copy\fly-trader\.venv-lab`, with the home PC's package versions (numpy 2.5.4, pandas 3.1.1, scipy 1.18.1, pyarrow 26.0.1, gymnasium 1.4.0, neuprint-python 0.6.4, yfinance 1.8.0, pytest 9.2.0, pillow 13.0.0, pygame-ce 2.5.8, moderngl 5.13.0). Its `requests` is 2.34.2, newer than the old pin stuck in the home PC's main Python (handover section 14, item 10).
 
-So **nothing in V4a has been executed**. The code was checked by reading only: the lab AI and an independent review pass, which recomputed every exact assertion by hand and found no bugs. First job at home, after the merge: `python -m pytest -q tests` (expect 274 + 9 = 283 passed). If a V4a test fails, fix V4a; do not loosen the test without understanding why.
+**Tests on the lab PC:** the first run gave 281 passed, 2 failed. Both failures were a real Windows bug in V4a: `os.replace` raised `PermissionError: [WinError 5] Access is denied` when swapping in a state file written moments earlier (a scanner or indexer briefly holds new files). Fixed: `save_state` now retries the swap for up to about 10 seconds before giving up, with a new test for it. After the fix: **284 passed** (274 + 10 V4a tests), and the V4a tests passed 5 runs in a row. At home, after the merge, run `python -m pytest -q tests` once to confirm (expect 284).
 
 ### V4a details: `accounts/policy_state.py`
 
@@ -42,7 +44,7 @@ What it does:
 - `PolicyState`: the memory as **dates** (entry and sleeve buy dates, peaks, cooldown days left at the save date, dates of the last full rebalance and last refill), plus a `version`.
 - `capture(policy, dates, i, mode, prev)` and `restore(state, policy, dates, i)`: policy <-> state. Dates before the new frame's first day are counted back in weekdays (negative indices), so a short daily price window still gives correct held-day counts. Dict order is kept (the policy sells in that order).
 - `mode_today(state, dates, i, params)`: `'full'`, `'fill'` or `None`. Same rhythm as `accounts.sim.run_account` (full every `every`, refill every `fill_every` trading days) but counted from the last rebalance, so a missed day catches up instead of skipping.
-- `save_state` / `load_state`: JSON, written to a temp file then swapped in. A missing file = first day (`None`). A damaged file or a state dated after today raises instead of silently starting over (starting over would force a full rebalance and forget stops and cooldowns).
+- `save_state` / `load_state`: JSON, written to a temp file then swapped in (the swap is retried briefly on Windows' "Access is denied"). A missing file = first day (`None`). A damaged file or a state dated after today raises instead of silently starting over (starting over would force a full rebalance and forget stops and cooldowns).
 
 Key tests: a policy rebuilt from the file every morning makes **exactly** the same trades as one that never stops, both with the full price history and with a 100-day rolling window. Others cover cooldowns across frames, the rebalance rhythm, file safety, and the ticker `NA`.
 
@@ -85,7 +87,7 @@ Run in `cmd` at home, from `D:\github\fly-trader\fly-trader` (replace `E:` with 
 4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the four in section 2).
 5. `git merge lab/lab-work`
 6. `git status --short --untracked-files=all`: the price and SEC data should be gone from the list (about 35 entries left, all code, tests, docs and small csvs).
-7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 283 with the 9 new V4a tests, which have **never been run**).
+7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 284 with the 10 new V4a tests, as on the lab PC).
 8. When done with the drive: `git remote remove lab`.
 
 The merged commit lands on whatever branch is checked out at home (normally `trading-t1-account`). Nothing is pushed; the user pushes when ready.
@@ -103,7 +105,7 @@ Copy from `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-t
 ## 4. Notes for the AI at home
 
 - Update `PROJECT_HANDOVER_CURRENT.md` once this is merged: section 10 (`.gitignore` gaps), section 14 item 7, section 15 "Risk" line and section 17 task 2 are now partly or fully done. Task 2's second half (copy `token_keeper.mjs` into `broker/` without secrets) is **not done**.
-- V4 plan agreed in the lab (each part waits for the user's "go"): **V4a** saved policy state (written, untested); **V4b** today's fly scores from a league folder (not started; open decision: score only S&P 500 stocks the game offers, as the leagues were trained on, or all offered US stocks; the lab AI recommended S&P 500 only); **V4c** order planner: shadow `Account` seeded with the game's real holdings and cash (pass cash 100,000 explicitly), one `HoldPolicy` day with MIX, diff -> order list with reasons; **V4d** `daily_run` command: read-only bridge reads, availability filter, writes `orders/YYYY-MM-DD.csv` and a summary. No ordering code (that is V5).
+- V4 plan agreed in the lab (each part waits for the user's "go"): **V4a** saved policy state (done, tested on the lab PC); **V4b** today's fly scores from a league folder (not started; open decision: score only S&P 500 stocks the game offers, as the leagues were trained on, or all offered US stocks; the lab AI recommended S&P 500 only); **V4c** order planner: shadow `Account` seeded with the game's real holdings and cash (pass cash 100,000 explicitly), one `HoldPolicy` day with MIX, diff -> order list with reasons; **V4d** `daily_run` command: read-only bridge reads, availability filter, writes `orders/YYYY-MM-DD.csv` and a summary. No ordering code (that is V5).
 - Open questions for the user from the lab session: pushed the post-U2 work yet? full availability run finished? terms of service read?
 - Still open from section 17: task 1 (commit and push the post-U2 work; safe now that `.gitignore` is fixed), task 3 (cleanup), 3b, 4 (terms of service), 5 (full availability run), 6 (V4 order list) and beyond.
 - The user commits and pushes. Follow the working rules in `PROJECT_HANDOVER_CURRENT.md` section 19.
