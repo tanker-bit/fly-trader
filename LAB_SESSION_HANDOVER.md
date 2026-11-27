@@ -222,6 +222,8 @@ run_autopilot.cmd                            (the same from any folder, for a sc
 5. Orders through `broker.trade_ui` (all its checks); the day is accepted only when nothing went wrong. A quiet day (no orders) is accepted too, so the policy memory moves forward.
 6. `orders\STOP` stops it before anything happens or between orders. Everything is appended to `orders\autopilot.log`.
 
+**Lab test of the whole autopilot on the real site (2026-11-27 13:25-13:32 New York, `--preview-only`):** the fly read its account from the website (value/cash/buying power 100,000.00, 0 holdings, 0 open orders), refreshed prices, scored and planned 26 buys for 2026-11-25, then previewed 23 of them; BE (+6.7%), NTAP (+7.2%) and ON (+6.3%) were skipped by the 5% price check; 0 errors; nothing submitted, nothing accepted. The AI started the command only; the fly's program did every step.
+
 **Scheduling (not set up in the lab):** one run per trading day after 16:15 New York time, e.g. a Windows scheduled task at home (adjust the time to the PC's time zone; 16:45 New York = 16:45 Eastern):
 ```
 schtasks /Create /TN "STONKFLY autopilot" /TR "D:\github\fly-trader\fly-trader\run_autopilot.cmd" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 16:45
