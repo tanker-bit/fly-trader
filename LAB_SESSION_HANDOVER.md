@@ -6,8 +6,8 @@ For the AI assistant and the user at home. Read `PROJECT_HANDOVER_CURRENT.md` fi
 
 - **Built and tested in the lab:** the whole daily pipeline from research to the website. V4a (policy memory between days), V4b (live features + fly scores, reproducing the training panel and the league's saved scores exactly), V4c (order planner with reasons), V4d (daily dry run + price refresh), V5 (a bot that places orders through the Investopedia Trade tab in a visible Edge window), the **autopilot** (the fly reads its own account on the website, plans and trades a whole day unattended), and the **3D dashboard** showing the fly at work: live ticker searches, quotes, lever pulls, and a 4th monitor with the fly's browser.
 - **Real-site runs:** preview only. Account reading, price refresh, planning and the Trade-tab flow all worked on the real site. **No order has been submitted by anyone.** The submit step itself is tested only on a local stand-in page.
-- **Tests:** 274 at the start; **356 passed** at the end on the lab PC (plus the dashboard's own `--selftest`).
-- **Git:** 20 commits (the last one is this rewrite of the handover) on the local branch **`lab-work`** in `D:\github-copy\fly-trader\fly-trader`, on top of `cec8e1a`. **Nothing was pushed to GitHub.** See section 3.
+- **Tests:** 274 at the start; **364 passed** at the end on the lab PC (plus the dashboard's own `--selftest`).
+- **Git:** the lab commits are on the branch **`lab-work`**, **pushed to GitHub** (`https://github.com/tanker-bit/fly-trader/tree/lab-work`), on top of `cec8e1a`. No pull request, no merge: `main` and `trading-t1-account` on GitHub are unchanged. See section 3.
 - **Research reminder:** no tradable edge has been shown (see `PROJECT_HANDOVER_CURRENT.md` section 1). This is a play-money research run.
 
 ## 2. Where this work happened
@@ -45,9 +45,12 @@ For the AI assistant and the user at home. Read `PROJECT_HANDOVER_CURRENT.md` fi
 | `7abdefe` | Dashboard: website panel as a split screen that never covers a monitor |
 | `5caf565` | Handover: keep the bot's Edge window visible next to the dashboard |
 | `c5d7c2f` | Bot: always reopen Edge on the screen unless `--offscreen` |
-| (last) | Handover: rewritten in full with the final state |
+| `061da87` | Handover: rewritten in full (this was the state pushed first) |
+| `801aab2` | Live S&P 500 membership from Wikipedia (`data_live/universe`) |
+| `e0ce6b0` | V4a: count days before the price window in NYSE trading days |
+| (last) | `broker/token_keeper.mjs` backup copy; `PROJECT_HANDOVER_CURRENT.md` committed and updated; this handover updated |
 
-24 files changed against `cec8e1a`: `.gitignore` and `experiments/visual_dashboard.py` modified, everything else new (list in section 3, Route B).
+Changed against `cec8e1a`: `.gitignore` and `experiments/visual_dashboard.py` modified; `PROJECT_HANDOVER_CURRENT.md` added (it was an untracked home file, now updated); everything else new (list in section 3, Route B).
 
 ## 3. Bringing the work home (or to GitHub)
 
@@ -63,16 +66,16 @@ git push -u origin lab-work
 1. `git status` and `git log --oneline -1`: expect `trading-t1-account` at `cec8e1a`, with `.gitignore` and `experiments/visual_dashboard.py` not modified. If the home branch has new commits, the merge is a normal merge; review it. If either file was edited at home, commit or set that aside first.
 2. `git remote add lab E:/github-copy/fly-trader/fly-trader`
 3. `git fetch lab lab-work`
-4. `git log --oneline cec8e1a..lab/lab-work` (the 20 commits) and `git diff --stat HEAD lab/lab-work` (the 24 files)
-5. `git merge lab/lab-work`
+4. `git log --oneline cec8e1a..lab/lab-work` and `git diff --stat HEAD lab/lab-work` (what will arrive)
+5. **Move the home copy of `PROJECT_HANDOVER_CURRENT.md` aside first** (it is untracked at home, and `lab-work` now contains it, so git would refuse the merge): `ren PROJECT_HANDOVER_CURRENT.md PROJECT_HANDOVER_CURRENT.home.md`. The lab version contains all of it plus the lab updates. Then `git merge lab/lab-work`. (Or, from GitHub instead of the drive: `git fetch origin lab-work` and `git merge origin/lab-work`.)
 6. `pip install playwright` in the project environment (Edge is used as installed; no browser download)
-7. `python -m pytest -q tests` from the project root: expect **356 passed** (274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 11 V5 + 11 autopilot + 16 dashboard). Without Playwright, 5 browser tests are skipped.
+7. `python -m pytest -q tests` from the project root: expect **364 passed** (274 + 11 V4a + 3 calendar + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 4 membership + 11 V5 + 11 autopilot + 16 dashboard). Without Playwright, 5 browser tests are skipped.
 8. `python experiments\visual_dashboard.py --selftest` (expect PASS)
 9. When done with the drive: `git remote remove lab`. Then push from home when ready.
 
-**Route B: copy files by hand** (fallback). From `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-trader\`: `.gitignore`, `LAB_SESSION_HANDOVER.md`, `run_autopilot.cmd`, `accounts/policy_state.py`, `accounts/order_plan.py`, `tournament/live.py`, `tournament/live_features.py`, `broker/live_prices.py`, `broker/game_portfolio.py`, `broker/daily_run.py`, `broker/trade_ui.py`, `broker/site_account.py`, `broker/autopilot.py`, `broker/live_feed.py`, `experiments/visual_dashboard.py`, `tests/test_policy_state.py`, `tests/test_live_scores.py`, `tests/test_live_features.py`, `tests/test_order_plan.py`, `tests/test_daily_run.py`, `tests/test_trade_ui.py`, `tests/fake_trade_page.html`, `tests/test_autopilot.py`, `tests/test_trade_feed.py`.
+**Route B: copy files by hand** (fallback). From `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-trader\`: `.gitignore`, `LAB_SESSION_HANDOVER.md`, `run_autopilot.cmd`, `PROJECT_HANDOVER_CURRENT.md` (see step 5 above), `accounts/policy_state.py`, `accounts/market_calendar.py`, `accounts/order_plan.py`, `tournament/live.py`, `tournament/live_features.py`, `broker/live_prices.py`, `broker/game_portfolio.py`, `broker/daily_run.py`, `broker/trade_ui.py`, `broker/site_account.py`, `broker/autopilot.py`, `broker/live_feed.py`, `broker/live_universe.py`, `broker/token_keeper.mjs`, `experiments/visual_dashboard.py`, `tests/test_policy_state.py`, `tests/test_market_calendar.py`, `tests/test_live_scores.py`, `tests/test_live_features.py`, `tests/test_order_plan.py`, `tests/test_daily_run.py`, `tests/test_trade_ui.py`, `tests/fake_trade_page.html`, `tests/test_autopilot.py`, `tests/test_trade_feed.py`, `tests/test_live_universe.py`.
 
-**Not in git, but in the copy (and so on the drive):** `orders\` (plans, logs, the policy memory, the dashboard feed), `data_live\prices\` (506 refreshed Yahoo files) inside the repo, and `D:\github-copy\fly-trader\data_live\` outside it (the bot's Edge profile with the **live Investopedia login**, plus page maps and screenshots from mapping the site). All are git-ignored or outside the repo.
+**Not in git, but in the copy (and so on the drive):** `orders\` (plans, logs, the policy memory, the dashboard feed), `data_live\prices\` (506 refreshed Yahoo files) and `data_live\universe\` (the fresh S&P 500 list) inside the repo, and `D:\github-copy\fly-trader\data_live\` outside it (the bot's Edge profile with the **live Investopedia login**, plus page maps and screenshots from mapping the site). All are git-ignored or outside the repo.
 
 ## 4. How it fits together
 
@@ -80,6 +83,7 @@ git push -u origin lab-work
 python -m broker.autopilot            (one trading day, no person needed; run_autopilot.cmd for a scheduled task)
   1. broker/site_account.py   read the account on the website (Portfolio + Order Status pages)       -> stop if open orders
   2. broker/live_prices.py    refresh Yahoo prices into data_live/prices (today's bar only after 16:15 New York)
+     broker/live_universe.py  the S&P 500 list from Wikipedia into data_live/universe (weekly)
   3. tournament/live_features.py   today's 25 features for every S&P 500 member (same code as the training panel)
   4. tournament/live.py       scores from league_v8's 10 kept flies + their committee
   5. accounts/order_plan.py   one hold-policy day (MIX) on a shadow copy of the account -> orders with reasons
@@ -95,7 +99,7 @@ python experiments\visual_dashboard.py --trade-feed --web-overlay      (watch it
 - `mode_today`: `'full'`, `'fill'` or `None`, the backtest's rhythm but counted from the last rebalance, so a missed day catches up.
 - `save_state` / `load_state`: JSON, temp file then swap, **retried on Windows "Access is denied"** (a real failure seen in the lab: a scanner holds new files for a moment). A missing file = first day; a damaged or future-dated file raises.
 - Proven: a policy rebuilt from the file every morning makes exactly the same trades as one that never stops (full history and a 100-day window).
-- Known limitation: dates before the price frame are counted in weekdays, not exchange days (one day off per holiday in that stretch). Keep the daily frame longer than 252 days plus a margin, or pass a holiday list to `np.busday_*`.
+- Days before the price frame are counted in **NYSE trading days** (`accounts/market_calendar.py`: the holiday rules plus one-off closures; it matches SPY's 6,510 trading days since 2001 exactly). A synthetic frame that trades on holidays (test markets built with `pd.bdate_range`) keeps plain weekdays, so it stays consistent with itself.
 
 ### V4b-1: `tournament/live.py` (load and score the flies)
 - `pick_flies(store, "kept")` = alive, scored (not silent) in the latest round, weights on disk. For `league_v8`: exactly the 10 KEPT in round 18 (`a0180 a0182 a0184 a0185 a0187 a0191 a0192 a0193 a0195 a0196`). `"best"` = `a0192`. Newborns `a0204`-`a0208` are left out.
@@ -119,6 +123,7 @@ python -m broker.daily_run --accept <date>          (make that day's state_after
 - Refresh goes to `data_live/prices` only; `data_fundamentals` is never rewritten (the exactness tests depend on it). Today's bar is dropped before 16:15 New York (a real bug: the first refresh, at 12:47 on a half day, planned on intraday prices).
 - Warns on stale prices (over 4 days), names stale-priced stocks (`SNDK` ended 2026-11-19), never-checked stocks and guard skips.
 - `--portfolio live` reads through the old bridge (never run in the lab); the autopilot reads the account from the website instead (below).
+- **Fresh S&P 500 membership** (`broker/live_universe.py`, `--refresh-membership`, `--live-universe data_live/universe`): the current constituents and Wikipedia's change log (now on the "Historical components" page), same parser as the research list, written to `data_live/universe` only; used whenever present; the autopilot refreshes it when older than 7 days. A page with fewer than 480 or more than 520 members is refused. The User-Agent is a plain project name (no personal data). The price refresh now also fetches members that have no price file yet. Real run 2026-11-27: 503 members, newest change 2026-10-30, nothing changed since the research list (2026-11-07).
 
 ### V5: `broker/trade_ui.py` (website order bot)
 ```
@@ -183,9 +188,9 @@ Rewritten and grouped: Python caches; **secrets and logins** (`.env`, `bridge_ke
 2. **Old plan:** `orders\2026-11-25\orders.csv` is from 2026-11-25 prices; more of its orders will be skipped by the 5% check every day. Let the autopilot make a new plan rather than trading that one.
 3. **Holdings read:** after the first fills, run the autopilot in `--preview-only` once and check `orders\web_account.json` (symbols, quantities, per-share purchase prices; the planner flags odd purchase/current ratios).
 4. **Availability:** `data_us/game_availability.csv` has only 50 stocks; every symbol the bot touched so far existed. Run the full V3 check or use `--offered-only` if failures appear.
-5. **Not refreshed:** S&P 500 membership (`universe/intervals.csv`) and the SEC cache. Refreshing SEC needs a User-Agent with a name and email: ask the user first.
+5. **Not refreshed:** the SEC cache (filings after it are missing; new members have price features but filler fundamentals until then). Refreshing SEC needs a User-Agent with a name and email: ask the user first. (S&P 500 membership now refreshes itself weekly.)
 6. **Scheduling** (not set up): one run per trading day after 16:15 New York, e.g. `schtasks /Create /TN "STONKFLY autopilot" /TR "D:\github\fly-trader\fly-trader\run_autopilot.cmd" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 16:45` (adjust to the PC's time zone). The PC must be on and the bot's profile signed in.
-7. From the main handover: push the post-U2 work (safe now that `.gitignore` is fixed); cleanup (task 3); `token_keeper.mjs` into `broker/` without secrets (task 2, second half); update `PROJECT_HANDOVER_CURRENT.md` sections 10, 14, 15, 17 and 19 with this file's results; decide whether the research continues (task 9). Never run `--final`.
+7. From the main handover (`PROJECT_HANDOVER_CURRENT.md`, now committed and updated with section 21): push the older post-U2 home work (safe now that `.gitignore` is fixed); cleanup (task 3); decide whether the research continues (task 9). Never run `--final`. (`token_keeper.mjs` is now backed up as `broker/token_keeper.mjs`.)
 
 ## 8. Before leaving the lab PC (public computer)
 
@@ -199,7 +204,7 @@ Rewritten and grouped: Python caches; **secrets and logins** (`.env`, `bridge_ke
 ```
 D:\github-copy\fly-trader\.venv-lab\Scripts\activate
 cd /d D:\github-copy\fly-trader\fly-trader
-python -m pytest -q tests                                  (356 passed, about 1.5 minutes)
+python -m pytest -q tests                                  (364 passed, about 1.5 minutes)
 python experiments\visual_dashboard.py --selftest          (PASS)
 ```
-New test files: `test_policy_state` (10), `test_live_scores` (6), `test_live_features` (8), `test_order_plan` (11), `test_daily_run` (9), `test_trade_ui` (11, uses `fake_trade_page.html`), `test_autopilot` (11), `test_trade_feed` (16). Tests that need the real caches, `league_v8`, Playwright or Edge are skipped where those are missing.
+New test files: `test_policy_state` (11), `test_market_calendar` (3), `test_live_universe` (4), `test_live_scores` (6), `test_live_features` (8), `test_order_plan` (11), `test_daily_run` (9), `test_trade_ui` (11, uses `fake_trade_page.html`), `test_autopilot` (11), `test_trade_feed` (16). Tests that need the real caches, `league_v8`, Playwright or Edge are skipped where those are missing.
