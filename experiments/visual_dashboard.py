@@ -36,6 +36,8 @@ Build status (grown in parts):
         12b end-to-end fake-GL frame test over every state, window shape and bloom failure path (done)
 
 Run:   python experiments/visual_dashboard.py --league-root league_data_fundamentals [--panel P] [--sec-root S]
+       python experiments/visual_dashboard.py --trade-feed     (watch the fly search tickers and trade on the website, live)
+       python experiments/visual_dashboard.py --trade-replay   (replay its last website run)
        python experiments/visual_dashboard.py --sim          (synthetic feed, no league needed)
 Check: python experiments/visual_dashboard.py --selftest   (no GPU needed)
 Keys:  TAB next agent | SPACE pause | B bloom on/off, +/- bloom strength | ESC quit        (fullscreen by default; --windowed [--size 1600x900])
@@ -1614,11 +1616,11 @@ def format_metric_row(line: str) -> str:
     return f"{tk} {tag[:max(room, 1)]:<{max(room, 1)}} {val}"[:METRIC_COLS].rstrip()
 
 
-def render_metrics(cv: Canvas, lines, scroll: float, live: bool):
+def render_metrics(cv: Canvas, lines, scroll: float, live: bool, title: str = "XBRL DATA"):
     x, y, w, h = METRICS_RECT
     cv.rect(x, y, w, h, COL_SCR_PANEL)
     cv.frame(x, y, w, h, COL_SCR_BORDER)
-    cv.text(x + 4, y + 3, "XBRL DATA", COL_SCR_TEXT if live else COL_SCR_DIM, 2)
+    cv.text(x + 4, y + 3, title, COL_SCR_TEXT if live else COL_SCR_DIM, 2)
     cv.rect(x + 3, y + 20, w - 6, 1, COL_SCR_GRID)
     rows = (h - 24) // METRIC_ROW_H
     if not lines:
@@ -1642,9 +1644,10 @@ def render_status(cv: Canvas, vm, t: float):
     cv.rect(x, y, w, h, COL_SCR_PANEL)
     cv.frame(x, y, w, h, COL_SCR_BORDER)
     state = getattr(vm, "state", "IDLE")
+    trade = getattr(vm, "source", "") == "trade"                                   # the live website run (TradeFeed)
     if state == "RESEARCH":
         if int(t * BLINK_HZ * 2) % 2 == 0:                                         # flashing
-            cv.text(x + 8, y + 8, "CRAWLING SEC EDGAR...", COL_SCR_AMBER, 2)
+            cv.text(x + 8, y + 8, "SEARCHING TRADE TAB" if trade else "CRAWLING SEC EDGAR...", COL_SCR_AMBER, 2)
         cv.text(x + 8, y + 30, str(getattr(vm, "research_status", ""))[:(w - 16) // 12], COL_SCR_TEXT, 2)
         bar_w = 60
         bx = x + 4 + int((t * 90.0) % (w - 8 - bar_w))
@@ -1652,11 +1655,16 @@ def render_status(cv: Canvas, vm, t: float):
         cv.rect(bx, y + h - 14, bar_w, 6, COL_SCR_TEXT)
     else:
         tk = getattr(vm, "ticker", "") or ""
-        msg = STATE_STATUS.get(state, state).format(tk=tk).strip()
+        msg = ("PREVIEW ORDER {tk}" if trade and state == "HOLD" else STATE_STATUS.get(state, state)).format(tk=tk).strip()
         col = {"BUY": COL_CANDLE_UP, "SELL": COL_CANDLE_DN, "SILENT": COL_SCR_DIM}.get(state, COL_SCR_TEXT)
         cv.text(x + 8, y + 10, msg[:(w - 16) // 12], col, 2)
-        cv.text(x + 8, y + 36, "ILLUSTRATIVE", COL_SCR_DIM, 2)
-        cv.text(x + 8, y + 54, "NO LIVE TRADES", COL_SCR_DIM, 2)
+        if trade:
+            note = str(getattr(vm, "replay_label", "") or "LIVE GAME").upper()
+            cv.text(x + 8, y + 36, note[:(w - 16) // 12], COL_SCR_AMBER, 2)
+            cv.text(x + 8, y + 54, "INVESTOPEDIA SIM", COL_SCR_DIM, 2)
+        else:
+            cv.text(x + 8, y + 36, "ILLUSTRATIVE", COL_SCR_DIM, 2)
+            cv.text(x + 8, y + 54, "NO LIVE TRADES", COL_SCR_DIM, 2)
 
 
 def apply_silent(cv: Canvas):
@@ -1695,7 +1703,8 @@ class ScreenContent:
         self._last_draw, self._sig = t, sig
         self.canvas.fill(COL_SCR_BG)
         render_chart(self.canvas, self.series, getattr(vm, "ticker", ""), date_txt(vm))
-        render_metrics(self.canvas, getattr(vm, "research_lines", None) or [], self.scroll, state == "RESEARCH")
+        render_metrics(self.canvas, getattr(vm, "research_lines", None) or [], self.scroll, state == "RESEARCH",
+                       "QUOTE DATA" if getattr(vm, "source", "") == "trade" else "XBRL DATA")
         render_status(self.canvas, vm, t)
         if state == "SILENT":
             apply_silent(self.canvas)
@@ -3171,8 +3180,173 @@ class SimFeed:
             self._thread.join(timeout=2.0)
 
 
+class TradeFeed:
+    """The fly trading on the Investopedia website, live or replayed. broker.autopilot / broker.trade_ui append events to a JSON-lines
+    file (broker/live_feed.py); a thread tails it and the render thread plays them one by one: the main monitor shows the ticker the
+    fly is searching and its quote, the fly pulls the BUY / SELL lever when an order is submitted, and the tape, the log and the account
+    panel follow the real run. Reads only; never writes anything."""
+    source = "trade"
+    HOLD = {"start": 0.8, "phase": 1.6, "account": 1.2, "search": 2.2, "quote": 2.4, "preview": 1.8, "done": 2.0}
+
+    def __init__(self, path, replay: bool = False, start_thread: bool = True, poll: float = 0.5):
+        from broker.live_feed import last_run, read_new
+        self._read_new = read_new
+        self.path = Path(path)
+        self.poll = poll
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._pending = collections.deque()
+        if replay:
+            self._pending.extend(last_run(self.path))
+        _, self._offset = read_new(self.path, 0)                  # from now on only new events are read
+        self.replay = replay
+        self.state, self.t, self.hold, self.clock, self.paused = "IDLE", 0.0, 0.0, 0.0, False
+        self.ticker, self.research_status, self.research_lines = "", "", []
+        self.log = collections.deque(maxlen=10)
+        self.tape = collections.deque(maxlen=12)
+        self.header = dict(round="LIVE", universe="--", top_id="COMMITTEE", mode="trading")
+        self.mode_label = "REPLAY" if replay else "LIVE GAME"
+        self.trade_date = ""
+        self.events_shown = 0
+        self._thread = None
+        if start_thread:
+            self._thread = threading.Thread(target=self._run, name="trade-feed", daemon=True)
+            self._thread.start()
+
+    # -- producer: tail the event file ------------------------------------
+    def poll_once(self):
+        ev, off = self._read_new(self.path, self._offset)
+        with self._lock:
+            self._offset = off
+            self._pending.extend(ev)
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                self.poll_once()
+            except Exception:
+                pass
+            self._stop.wait(self.poll)
+
+    def push(self, ev: dict):
+        """Tests and tools can feed events directly."""
+        with self._lock:
+            self._pending.append(ev)
+
+    # -- foreground (render thread) ---------------------------------------
+    def update(self, dt: float):
+        if self.paused:
+            return
+        self.clock += dt
+        self.t += dt
+        if self.t < self.hold:
+            return
+        with self._lock:
+            ev = self._pending.popleft() if self._pending else None
+        if ev is None:
+            if self.state in ("BUY", "SELL", "HOLD"):
+                self.state = "IDLE"
+            return
+        self._apply(ev)
+
+    def _say(self, rgb, text):
+        self.log.append((rgb, text))
+
+    def _apply(self, ev: dict):
+        k = ev.get("kind", "")
+        self.events_shown += 1
+        self.t, self.hold = 0.0, self.HOLD.get(k, 0.6)
+        sym = str(ev.get("symbol", "") or "").upper()
+        num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        if ev.get("asof"):
+            self.trade_date = format_trade_date(ev["asof"])
+        if k == "start":
+            self.mode_label = ("REPLAY " if self.replay else "") + ("PREVIEW ONLY" if ev.get("mode") == "preview" else "LIVE GAME")
+            self.state, self.research_status = "RESEARCH", "WAKING UP"
+            self._say(UI_CYAN, f"[FLY] {self.mode_label.lower()} run started")
+        elif k == "phase":
+            self.state, self.research_status = "RESEARCH", str(ev.get("text", ""))
+            self._say(UI_AMBER, f"[FLY] {str(ev.get('text', '')).lower()}")
+        elif k == "account":
+            pos = [tuple(p) for p in (ev.get("positions") or [])]
+            self.header.update(equity=ev.get("equity"), cash=ev.get("cash"), positions=pos, start_cash=100_000.0)
+            eq, cash = ev.get("equity"), ev.get("cash")
+            self._say(UI_CYAN, f"[FLY] account ${float(eq or 0):,.0f}, cash ${float(cash or 0):,.0f}")
+        elif k == "search":
+            self.state, self.ticker = "RESEARCH", sym
+            self.research_status = f"SEARCHING {sym}"
+            rank, score = ev.get("rank"), ev.get("score")
+            rk = str(int(rank)) if num(rank) else "--"
+            self.research_lines = [f"{sym} {ev.get('side', '')}", f"QTY {ev.get('shares', '')}", f"RANK {rk}",
+                                   f"SCORE {score:+.2f}" if num(score) else "SCORE --"]
+            self._say(UI_CYAN, f"[FLY SEARCH] {sym}: {ev.get('side', '')} {ev.get('shares', '')} (rank {rk})")
+        elif k == "quote":
+            self.state, self.ticker = "RESEARCH", sym
+            self.research_status = f"READING {sym} QUOTE"
+            lines = [f"{sym} QUOTE"]
+            for label, key in (("BID", "bid"), ("ASK", "ask"), ("DAY HI", "day_high"), ("DAY LO", "day_low"),
+                               ("52W HI", "high_52w"), ("52W LO", "low_52w")):
+                if num(ev.get(key)):
+                    lines.append(f"{label} {ev[key]:,.2f}")
+            if ev.get("volume"):
+                lines.append(f"VOL {ev['volume']}")
+            self.research_lines = lines + self.research_lines[1:4]
+        elif k == "preview":
+            self.state, self.ticker = "HOLD", sym
+            tot = ev.get("est_total")
+            self._say(UI_CYAN, f"[FLY PREVIEW] {ev.get('side', '')} {ev.get('shares', '')} {sym}"
+                               + (f" ~${float(tot):,.0f}" if num(tot) else ""))
+        elif k == "result":
+            st, side = ev.get("status", ""), ev.get("side", "")
+            sc = ev.get("score") if num(ev.get("score")) else 0.0
+            self.ticker = sym
+            if st == "submitted" and side in ("BUY", "SELL"):
+                self.state, self.hold = side, DURATION[side]
+                self.tape.append((sym, sc))
+                verb = "Bought" if side == "BUY" else "Sold"
+                self._say(UI_GREEN if side == "BUY" else UI_RED, f"[FLY {side}] {verb} {ev.get('shares', '')} {sym} (order sent)")
+            elif st == "previewed":
+                self.state, self.hold = "HOLD", DURATION["HOLD"]
+                self._say(UI_CYAN, f"[FLY PREVIEW ONLY] {sym} not submitted")
+            elif st == "skipped":
+                self._say(UI_AMBER, f"[FLY SKIP] {sym}: {str(ev.get('detail', ''))[:60]}")
+            else:
+                self._say(UI_RED, f"[FLY {str(st).upper()}] {sym}: {str(ev.get('detail', ''))[:60]}")
+        elif k == "done":
+            self.state, self.research_status = "IDLE", ""
+            self._say(UI_AMBER, f"[FLY] done: {str(ev.get('text', '')).lower()}")
+
+    def view(self) -> ViewModel:
+        reach, flash = envelopes(self.state, self.t)
+        c = self.clock
+        return ViewModel(
+            state=self.state, t=self.t, ticker=self.ticker, flash=flash, reach=reach,
+            lever_buy=reach if self.state == "BUY" else 0.0, lever_sell=reach if self.state == "SELL" else 0.0,
+            eyes_closed=(c % 4.0) < 0.12, wing=math.sin(c * 40), bob=math.sin(c * 2.5) * 0.015, zzz=0.0, clock=c,
+            header=dict(self.header), log=list(self.log), tape=list(self.tape), ic_history=[],
+            research_lines=list(self.research_lines), research_status=self.research_status,
+            replay_label=self.mode_label, source="trade", trade_date=self.trade_date)
+
+    def next_agent(self):
+        pass
+
+    def toggle_pause(self):
+        self.paused = not self.paused
+
+    def close(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+
 def make_feed(args):
-    """Real league if its state.json exists and the dashboard package imports; otherwise the simulator."""
+    """--trade-feed / --trade-replay: the fly on the Investopedia website. Otherwise the real league if its state.json exists and the
+    dashboard package imports; otherwise the simulator."""
+    path = getattr(args, "trade_feed", None)
+    if path or getattr(args, "trade_replay", False):
+        path = Path(path or "orders/live_feed.jsonl")
+        print(f"[dashboard] website trading feed: {path} ({'replay of the last run' if args.trade_replay else 'live'})")
+        return TradeFeed(path, replay=bool(args.trade_replay))
     if not args.sim:
         root = Path(args.league_root)
         if (root / "state.json").exists():
@@ -5153,6 +5327,9 @@ def parse_args(argv=None):
     ap.add_argument("--agent", help="pin one fly id instead of following the top fly")
     ap.add_argument("--poll", type=float, default=2.0, help="seconds between league polls")
     ap.add_argument("--sim", action="store_true", help="force the synthetic feed")
+    ap.add_argument("--trade-feed", nargs="?", const="orders/live_feed.jsonl", default=None,
+                    help="show the fly trading on the website, live (event file written by broker.autopilot / broker.trade_ui)")
+    ap.add_argument("--trade-replay", action="store_true", help="replay the last website run from the event file")
     ap.add_argument("--nice", type=int, default=5, help="raise this process's niceness (POSIX) so training keeps priority")
     ap.add_argument("--windowed", action="store_true", help="open a normal window instead of fullscreen")
     ap.add_argument("--size", default="1600x900", help="window size for --windowed, WxH")

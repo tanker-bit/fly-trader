@@ -153,7 +153,7 @@ Run in `cmd` at home, from `D:\github\fly-trader\fly-trader` (replace `E:` with 
 4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the files in section 2).
 5. `git merge lab/lab-work`
 6. `git status --short --untracked-files=all`: the price and SEC data should be gone from the list (about 35 entries left, all code, tests, docs and small csvs).
-7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 340: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 11 V5 + 11 autopilot, as on the lab PC; install Playwright first, `pip install playwright`, or 5 V5 tests are skipped).
+7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 340: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 11 V5 + 11 autopilot + 10 dashboard feed, as on the lab PC (350); install Playwright first, `pip install playwright`, or 5 V5 tests are skipped).
 8. When done with the drive: `git remote remove lab`.
 
 The merged commit lands on whatever branch is checked out at home (normally `trading-t1-account`). Nothing is pushed; the user pushes when ready.
@@ -182,6 +182,9 @@ Copy from `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-t
 - `broker/autopilot.py`
 - `tests/test_autopilot.py`
 - `run_autopilot.cmd`
+- `broker/live_feed.py`
+- `tests/test_trade_feed.py`
+- `experiments/visual_dashboard.py` (modified)
 
 (These are the only files the lab session changed. Every other entry in the lab copy's `git status` came from home unchanged.)
 
@@ -223,6 +226,17 @@ run_autopilot.cmd                            (the same from any folder, for a sc
 6. `orders\STOP` stops it before anything happens or between orders. Everything is appended to `orders\autopilot.log`.
 
 **Lab test of the whole autopilot on the real site (2026-11-27 13:25-13:32 New York, `--preview-only`):** the fly read its account from the website (value/cash/buying power 100,000.00, 0 holdings, 0 open orders), refreshed prices, scored and planned 26 buys for 2026-11-25, then previewed 23 of them; BE (+6.7%), NTAP (+7.2%) and ON (+6.3%) were skipped by the 5% price check; 0 errors; nothing submitted, nothing accepted. The AI started the command only; the fly's program did every step.
+
+### Dashboard: watching the fly trade (`--trade-feed`, `--trade-replay`)
+
+The user asked (lab, 2026-11-27) to see the fly search tickers in the 3D dashboard, overriding the earlier "do not change the dashboard" rule for this. Kept small: the 3D scene is unchanged; a third feed was added next to `LeagueBridge` and `SimFeed`.
+- `broker/live_feed.py`: `broker.autopilot` and `broker.trade_ui` append events to `orders/live_feed.jsonl` (start, phase, account, search, quote, preview, result, done). Writing can never fail a trading run.
+- `experiments/visual_dashboard.py`: new `TradeFeed` class, options `--trade-feed [PATH]` (live: only new events) and `--trade-replay` (the last run in the file). The main monitor shows SEARCHING <ticker> and a QUOTE DATA list (bid, ask, day and 52-week range, volume, rank, score); a submitted order plays the BUY/SELL lever animation and lands on the decision tape; the log and the account panel follow the real run. Wording only changes when this feed is used: "SEARCHING TRADE TAB" instead of "CRAWLING SEC EDGAR...", "LIVE GAME" / "PREVIEW ONLY" / "REPLAY ..." instead of "ILLUSTRATIVE / NO LIVE TRADES", "QUOTE DATA" instead of "XBRL DATA", "PREVIEW ORDER <ticker>" during a preview. The candle chart stays illustrative (as labelled).
+- Tests: `tests/test_trade_feed.py` (10); the dashboard's own `--selftest` still passes. Checked visually on the lab PC with a 3-order preview-only run (`orders/demo`).
+```
+python experimentsisual_dashboard.py --trade-feed --windowed      (then start the autopilot in another window)
+python experimentsisual_dashboard.py --trade-replay --windowed    (replay the last run)
+```
 
 **Scheduling (not set up in the lab):** one run per trading day after 16:15 New York time, e.g. a Windows scheduled task at home (adjust the time to the PC's time zone; 16:45 New York = 16:45 Eastern):
 ```

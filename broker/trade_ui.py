@@ -51,6 +51,14 @@ class NotSignedIn(RuntimeError):
 
 
 # ---------------------------------------------------------------- parsing and checks (no browser needed)
+def _num(x):
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v else None
+
+
 def money(text) -> float | None:
     m = re.search(r"-?\$?\s*([\d,]+(?:\.\d+)?)", str(text or ""))
     return float(m.group(1).replace(",", "")) if m else None
@@ -131,8 +139,10 @@ def should_accept(results: list) -> bool:
 
 # ---------------------------------------------------------------- the website
 class TradeSite:
-    def __init__(self, page, shots: Path | None = None, pause: float = 1.5, log=print):
+    def __init__(self, page, shots: Path | None = None, pause: float = 1.5, log=print, emit=None):
+        from broker.live_feed import nothing
         self.page, self.shots, self.pause, self.log, self.n = page, shots, pause, log, 0
+        self.emit = emit or nothing                   # broker.live_feed.Feed: the 3D dashboard shows what happens here
 
     def shot(self, name):
         if self.shots:
@@ -177,6 +187,8 @@ class TradeSite:
     def enter(self, order: dict) -> dict:
         """Fill the form for one order and return the stock panel's numbers. Raises LookupError if the game has no such symbol."""
         sym = order["game_symbol"].upper()
+        self.emit("search", symbol=sym, side=order["side"], shares=int(order["shares"]), rank=_num(order.get("rank")),
+                  score=_num(order.get("score")), reason=order.get("reason", ""))
         box = self.page.locator(SEL["symbol"]).first
         box.click()
         box.fill("")
@@ -194,6 +206,7 @@ class TradeSite:
         except Exception as e:
             raise SiteChanged("the stock panel with Bid/Ask did not appear") from e
         panel = parse_panel(self.text("form"))
+        self.emit("quote", symbol=sym, **panel)
         self.choose("action", SIDES[order["side"]])
         self.choose("order_type", "Market")
         self.choose("duration", "Day Only")
@@ -225,7 +238,10 @@ class TradeSite:
                     raise RuntimeError("no preview dialog appeared after two clicks") from e
         self.wait()
         items = [x.inner_text() for x in self.page.locator(SEL["pv_items"]).all()]
-        return parse_preview(self.text("pv_type"), self.text("pv_symbol"), self.text("pv_qty"), items)
+        pv = parse_preview(self.text("pv_type"), self.text("pv_symbol"), self.text("pv_qty"), items)
+        side = "SELL" if "sell" in pv["type"].lower() else "BUY"
+        self.emit("preview", symbol=pv["symbol"], side=side, shares=pv["qty"], est_price=pv["est_price"], est_total=pv["est_total"])
+        return pv
 
     def buying_power(self) -> float | None:
         return money(self.text("buying_power"))
@@ -268,6 +284,8 @@ def run_orders(site, orders: list, preview_only=False, max_drift=0.05, stop_file
                    est_price=None, est_total=None)
         if stop_file and stop_file.exists():
             results.append(dict(row, status="stopped", detail=f"{stop_file} exists"))
+            site.emit("result", symbol=o["game_symbol"], side=o["side"], shares=int(o["shares"]), status="stopped",
+                      detail="STOP file", score=_num(o.get("score")))
             log(f"STOP file found: {stop_file}; the remaining orders were not touched")
             break
         try:
@@ -300,6 +318,8 @@ def run_orders(site, orders: list, preview_only=False, max_drift=0.05, stop_file
             except Exception:
                 pass
         r = results[-1]
+        site.emit("result", symbol=r["game_symbol"], side=r["side"], shares=r["shares"], status=r["status"], detail=r["detail"],
+                  score=_num(o.get("score")))
         log(f"{r['status']:>9}  {r['side']:<4} {r['shares']:>6} {r['game_symbol']:<7} {r['detail'][:110]}")
     return results
 
@@ -376,15 +396,19 @@ def main(argv=None):
     orders = read_orders(day / "orders.csv")
     print(f"{len(orders)} orders for {a.date} from {day / 'orders.csv'}; {'PREVIEW ONLY' if a.preview_only else 'SUBMITTING'}; "
           f"create {Path(a.orders_dir) / 'STOP'} to halt between orders")
+    from broker.live_feed import Feed
+    feed = Feed(Path(a.orders_dir) / "live_feed.jsonl")
+    feed("start", mode="preview" if a.preview_only else "trading", asof=a.date)
     pw, ctx, page = browser(profile, a.headless)
     try:
-        site = TradeSite(page, shots=day / "screens")
+        site = TradeSite(page, shots=day / "screens", emit=feed)
         results = run_orders(site, orders, a.preview_only, a.max_drift, Path(a.orders_dir) / "STOP")
     finally:
         ctx.close()
         pw.stop()
     write_log(day / "trade_log.csv", results)
     counts = {s: sum(r["status"] == s for r in results) for s in ("submitted", "skipped", "previewed", "error", "stopped")}
+    feed("done", text=str(counts))
     print(f"\n{counts}; log: {day / 'trade_log.csv'}; screenshots: {day / 'screens'}")
     if not a.preview_only and not a.no_accept and should_accept(results):
         from broker.daily_run import accept

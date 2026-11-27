@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 
 from broker import daily_run as dr
+from broker.live_feed import Feed
 from broker import site_account as sa
 from broker import trade_ui as tu
 
@@ -57,12 +58,15 @@ def snapshot(acct: sa.SiteAccount, path: Path) -> Path:
     return path
 
 
-def run(a, log, browser=tu.browser, today=None) -> str:
+def run(a, log, browser=tu.browser, today=None, feed=None) -> str:
     """-> 'traded' | 'previewed' | 'no orders' | 'skipped: <why>'."""
     out = Path(a.out)
     profile = Path(a.profile).resolve()
+    feed = feed or Feed(out / "live_feed.jsonl")
     if (out / "STOP").exists():
         return f"skipped: {out / 'STOP'} exists"
+    feed("start", mode="preview" if a.preview_only else "trading")
+    feed("phase", text="READING ACCOUNT ON THE WEBSITE")
 
     # 1-2) the account, as the website shows it
     pw, ctx, page = browser(profile, a.headless)
@@ -71,10 +75,15 @@ def run(a, log, browser=tu.browser, today=None) -> str:
     finally:
         ctx.close()
         pw.stop()
+    feed("account", equity=acct.account_value, cash=acct.cash, buying_power=acct.buying_power,
+         positions=[[p["symbol"], p["quantity"], p.get("current_price"), p.get("total_value"),
+                     (p["current_price"] / p["purchase_price"] - 1.0) if p.get("current_price") and p.get("purchase_price") else 0.0]
+                    for p in acct.positions])
     if acct.failed:
         log(f"the website lists {len(acct.failed)} failed trade(s): " + "; ".join(
             f"{f.get('transaction', '?')} {f.get('quantity', '?')} {f.get('symbol', '?')} ({f.get('status', '')})" for f in acct.failed[:10]))
     if acct.open_orders:
+        feed("done", text="OPEN ORDERS WAITING: NO TRADING TODAY")
         return "skipped: open orders are still waiting on the website (" + ", ".join(
             f"{o.get('transaction', '?')} {o.get('quantity', '?')} {o.get('symbol', '?')}" for o in acct.open_orders[:10]) + ")"
     snap = snapshot(acct, out / "web_account.json")
@@ -86,8 +95,10 @@ def run(a, log, browser=tu.browser, today=None) -> str:
         args.append("--refresh-prices")
     if a.offered_only:
         args.append("--offered-only")
+    feed("phase", text="SCORING THE S&P 500" if a.no_refresh else "REFRESHING PRICES AND SCORING")
     res = dr.run_day(dr.parser().parse_args(args), today=today, log=log)
     day_dir, plan = Path(res["out"]), res["plan"]
+    feed("phase", text=f"PLANNED {len(plan.orders)} ORDERS", asof=res["asof"], n_flies=len(res.get("flies", [])))
 
     # 5) refuse what must not be traded
     if any(n.startswith("WARNING") for n in res["notes"]) and not a.allow_stale:
@@ -103,7 +114,7 @@ def run(a, log, browser=tu.browser, today=None) -> str:
     orders = tu.read_orders(day_dir / "orders.csv")
     pw, ctx, page = browser(profile, a.headless)
     try:
-        site = tu.TradeSite(page, shots=day_dir / "screens", log=log)
+        site = tu.TradeSite(page, shots=day_dir / "screens", log=log, emit=feed)
         results = tu.run_orders(site, orders, a.preview_only, a.max_drift, out / "STOP", log=log)
     finally:
         ctx.close()
@@ -111,6 +122,7 @@ def run(a, log, browser=tu.browser, today=None) -> str:
     tu.write_log(day_dir / "trade_log.csv", results)
     counts = {s: sum(r["status"] == s for r in results) for s in ("submitted", "skipped", "previewed", "error", "stopped")}
     log(f"orders: {counts}")
+    feed("done", text=" ".join(f"{k.upper()} {v}" for k, v in counts.items() if v))
 
     # 7) memory
     if a.preview_only:
