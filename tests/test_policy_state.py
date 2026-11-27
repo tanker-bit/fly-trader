@@ -199,3 +199,15 @@ def test_dates_before_the_frame_round_trip():
     for k in (0, 7, 29, -1, -7, -300):
         assert _pos(dates, _date_at(dates, k)) == k
     assert _pos(dates, "2022-06-04") == _pos(dates, "2022-06-06")                          # a Saturday maps to the next trading day
+
+
+def test_days_before_a_real_market_frame_are_counted_in_trading_days_not_weekdays():
+    """A real price frame skips NYSE holidays, so counting back past Thanksgiving must skip it too (it was one day off before)."""
+    from accounts.market_calendar import nyse_holidays
+    all_days = pd.bdate_range("2026-10-01", "2026-12-31")
+    real = all_days[~np.isin(all_days.values.astype("datetime64[D]"), nyse_holidays())]   # the real calendar: no 2026-11-26
+    frame = real[real >= pd.Timestamp("2026-11-30")]                                      # the window starts after Thanksgiving
+    assert _pos(frame, "2026-11-25") == -2                                                # Wed 25 and Fri 27; Thu 26 was closed
+    assert _date_at(frame, -2) == "2026-11-25" and _date_at(frame, -1) == "2026-11-27"
+    test_market = pd.bdate_range("2026-12-01", "2026-12-31").append(pd.DatetimeIndex(["2027-01-01"]))   # opens on a holiday
+    assert _pos(test_market, "2026-11-25") == -4                                          # such a frame counts plain weekdays

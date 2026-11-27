@@ -6,7 +6,7 @@ runner starts fresh every day with a new price frame, so this module saves the m
 
 Dates, not indices, are saved, so the file stays valid when tomorrow's price frame starts on a different day:
   * entry / tact: the date a name was first bought (held days are recounted in the new frame's trading days; a date before the
-    frame's first day is counted back in weekdays);
+    frame's first day is counted back in exchange trading days, NYSE holidays skipped);
   * cooldown: trading days a stopped-out name was still blocked at the save date (days that pass in the new frame are subtracted);
   * peak: the highest close since purchase (a price, saved as is);
   * last_full / last_fill: dates of the last full rebalance and the last refill, so the runner knows what is due today: a full
@@ -190,22 +190,36 @@ def _check_i(dates: pd.DatetimeIndex, i: int) -> None:
         raise IndexError(f"day index {i} is outside the price frame (0..{len(dates) - 1})")
 
 
+_NO_HOLIDAYS = np.array([], dtype="datetime64[D]")
+
+
+def _holidays(dates: pd.DatetimeIndex) -> np.ndarray:
+    """The holidays to skip when counting days before the frame: the NYSE calendar (accounts.market_calendar) when the frame
+    follows it, i.e. it trades on none of its holidays (real price data); none for a frame that trades on them (synthetic test
+    markets built with pd.bdate_range), so counting stays consistent with the frame itself."""
+    from accounts.market_calendar import nyse_holidays
+    hol = nyse_holidays()
+    inside = hol[(hol >= np.datetime64(dates[0].date(), "D")) & (hol <= np.datetime64(dates[-1].date(), "D"))]
+    days = dates.values.astype("datetime64[D]")
+    return _NO_HOLIDAYS if np.isin(inside, days).any() else hol
+
+
 def _pos(dates: pd.DatetimeIndex, d) -> int:
-    """Index of date d in the trading-day frame. A date before the frame gets a negative index counted in weekdays; a date missing
-    from the frame (a holiday or a gap in the data) maps to the next trading day in it."""
+    """Index of date d in the trading-day frame. A date before the frame gets a negative index counted in exchange trading days
+    (weekdays minus NYSE holidays, see _holidays); a date missing from the frame (a gap in the data) maps to the next trading day."""
     d = pd.Timestamp(d).normalize()
     first = dates[0]
     if d < first:
-        return -int(np.busday_count(np.datetime64(d.date(), "D"), np.datetime64(first.date(), "D")))
+        return -int(np.busday_count(np.datetime64(d.date(), "D"), np.datetime64(first.date(), "D"), holidays=_holidays(dates)))
     return int(dates.searchsorted(d, side="left"))
 
 
 def _date_at(dates: pd.DatetimeIndex, k: int) -> str:
-    """The date of index k; a negative k is counted back from the first day in weekdays (the inverse of _pos)."""
+    """The date of index k; a negative k is counted back from the first day in trading days (the inverse of _pos)."""
     k = int(k)
     if k >= 0:
         return dates[min(k, len(dates) - 1)].strftime("%Y-%m-%d")
-    return str(np.busday_offset(np.datetime64(dates[0].date(), "D"), k, roll="forward"))
+    return str(np.busday_offset(np.datetime64(dates[0].date(), "D"), k, roll="forward", holidays=_holidays(dates)))
 
 
 def _date(v) -> str:
