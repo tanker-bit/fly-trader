@@ -33,6 +33,8 @@ The copy's files are owned by the home Windows account, so git on the lab PC ref
 | 12 | `broker/daily_run.py` | **new, V4d**: the daily dry-run command and `--accept` | committed on `lab-work`, tested end to end on the local caches |
 | 13 | `tests/test_order_plan.py`, `tests/test_daily_run.py` | **new**: 11 + 9 tests | committed on `lab-work`, tested |
 | 14 | `.gitignore` | added `orders/`, `data_live/`, `game_snapshot*.json` (the user's game account and order lists) | committed on `lab-work` |
+| 15 | `broker/trade_ui.py` | **new, V5**: places a day's orders on the Investopedia website in the bot's own visible Edge window (Playwright); submits by default | committed on `lab-work`; tested on a local stand-in page; **preview-only run on the real site: 24 of 26 previewed, 2 skipped by the price guard, 0 errors** |
+| 16 | `tests/test_trade_ui.py`, `tests/fake_trade_page.html` | **new**: 11 tests (5 need Playwright + Edge; skipped otherwise) | committed on `lab-work`, tested |
 
 The lab commits hold lab work only. The 7 modified and 26 untracked files from home were deliberately left out (still uncommitted in the copy). Use Route A below.
 
@@ -149,7 +151,7 @@ Run in `cmd` at home, from `D:\github\fly-trader\fly-trader` (replace `E:` with 
 4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the files in section 2).
 5. `git merge lab/lab-work`
 6. `git status --short --untracked-files=all`: the price and SEC data should be gone from the list (about 35 entries left, all code, tests, docs and small csvs).
-7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 318: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d, as on the lab PC).
+7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 329: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 11 V5, as on the lab PC; install Playwright first, `pip install playwright`, or 5 V5 tests are skipped).
 8. When done with the drive: `git remote remove lab`.
 
 The merged commit lands on whatever branch is checked out at home (normally `trading-t1-account`). Nothing is pushed; the user pushes when ready.
@@ -171,6 +173,9 @@ Copy from `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-t
 - `broker/game_portfolio.py`
 - `broker/daily_run.py`
 - `tests/test_daily_run.py`
+- `broker/trade_ui.py`
+- `tests/test_trade_ui.py`
+- `tests/fake_trade_page.html`
 
 (These are the only files the lab session changed. Every other entry in the lab copy's `git status` came from home unchanged.)
 
@@ -180,7 +185,22 @@ Copy from `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-t
 - **V4 is built and tested in the lab** (V4a state, V4b-1 scoring, V4b-2 features, V4c planner, V4d daily dry run); see section 2. The universe is the S&P 500 (what the leagues trained on), buying limited to stocks the game is not known to refuse. The user later said in the lab: no need to work in small parts there, since the AI can run Python and the tests itself; the hard rules still apply.
 - **First things to do at home with V4:** (1) `python -m broker.daily_run --refresh-prices` (best after 16:15 New York time; earlier runs use the previous day); (2) with the bridge running, `python -m broker.daily_run --refresh-prices --portfolio live --lib-dir D:\github\investopedia_simulator_api --save-snapshot game_snapshot.json` and check the account read (cash, positions, per-share purchase prices); (3) the full availability run (V3) or `--offered-only`; (4) only then think about V5.
 - **Investopedia Terms of Service read in the lab (2026-11-27)** (handover task 4). The simulator's sign-in page links to the People Inc. brands Terms of Service (`https://www.people.inc/brands-termsofservice`), section 3.3 "Restrictions on Use of Services": (e) no "manual or automated software, devices, or other processes (including ... robots, scrapers ...)" to scrape, harvest or download data from the Services; (f) no use of data from the Services to develop software or train AI; (l) no use "in any way not expressly permitted"; (m) no violating or attempting to violate security features. A bot that logs in, opens the Trade tab, reads prices and company data and enters orders is automated software on the Services; the Cloudflare-avoiding bridge and the scripted availability check are in the same territory. Breaking these terms can end the account ("Any unauthorized use ... immediately terminates the licenses"). The user asked for V5 as a browser bot after this; the lab AI stopped and put the decision to the user (see section 5).
-- **V5 (placing orders) is not started and must not be without the user's explicit instruction.** It would read `orders\<date>\orders.csv`, need the bridge started with `--allow-orders`, and should begin with one tiny order the user watches; afterwards `--accept` the day.
+- **The user then decided (lab, 2026-11-27): "i dont really care about investopedias conditions since this is just a research project", asked for V5 as a website bot that submits by default ("i want the ai to be able to do most stuff without my input").** Built as `broker/trade_ui.py` (section 5 below). Kept on purpose: the user's own visible window, a few seconds per step, no disguise tricks, only Buy/Sell Market Day Only.
+
+### V5 details: `broker/trade_ui.py` (website order bot)
+
+```
+python -m broker.trade_ui --login                          (once per profile: sign in in the window that opens; the login is kept)
+python -m broker.trade_ui --date 2026-11-25                (place orders\2026-11-25\orders.csv: SUBMITS by default)
+python -m broker.trade_ui --date 2026-11-25 --preview-only (fill in and preview every order, never submit)
+```
+- Needs `pip install playwright` (1.65.2 in the lab) and Microsoft Edge; no browser download (`channel="msedge"`). The bot's own Edge profile defaults to `..\data_live\edge_profile` (outside the repository, it holds the live login). At home, run `--login` once.
+- Per order (sells first): Trade tab -> type the symbol -> pick the suggestion whose ticker is exactly it -> read the stock panel (bid/ask, day and 52-week range, volume; the page also shows EPS, market cap, P/E, dividend yield, next earnings) -> Buy or Sell -> shares -> Market, Day Only -> PREVIEW ORDER -> checks -> SUBMIT ORDER.
+- Checks before every submit (else skipped and logged): the preview shows exactly this symbol, "Buy/Sell at Market" and share count; the live ask (buy) or bid (sell) is within `--max-drift` (5%) of the plan's price; a buy's estimated total fits the buying power shown; no `orders\STOP` file.
+- Logs `orders\<date>\trade_log.csv` and screenshots in `orders\<date>\screens\`. If every order was submitted or skipped by a guard (no errors, at least one submitted), the day is accepted automatically (same as `broker.daily_run --accept`).
+- Page layout used (data-cy names, seen 2026-11-27): `symbol-search-field`, `symbol-info-form`, `action-select` (Buy / Sell / Short / Buy To Cover), `quantity-input`, `order-select`, `duration-select`, `preview-button`, `preview-order-dialog` (`preview-order-type`, `preview-stock-symbol`, `preview-stock-quantity`, `preview-list-item`), `change-order-button`, `submit-order-button`, `buying-power`, `cash`. Suggestions are `[role=option]`. A late "allow notifications" pop-up (`.pushly-prompt-btn-dismiss`) once swallowed the Preview click; the bot now dismisses it and retries once.
+- **Lab results on the real site (2026-11-27, account $100,000 cash, no positions):** preview-only run of the 2026-11-25 plan: 24 of 26 orders filled and previewed correctly, BE (+6.2%) and ON (+6.3%) skipped by the price guard, 0 errors; every symbol, including VTI/RSP/QQQ, exists in the game. **The SUBMIT path has only been tested on the local stand-in page**; what the real site shows after SUBMIT ORDER is not yet known (the bot records whatever message appears and treats error words as a failure).
+- Not built yet: reading the holdings table from the Portfolio page (the account had no positions to map). Until then `broker.daily_run` reads the account from a snapshot file or the bridge. It would read `orders\<date>\orders.csv`, need the bridge started with `--allow-orders`, and should begin with one tiny order the user watches; afterwards `--accept` the day.
 - Open questions for the user from the lab session: pushed the post-U2 work yet? full availability run finished? terms of service read?
 - Still open from section 17: task 1 (commit and push the post-U2 work; safe now that `.gitignore` is fixed), task 3 (cleanup), 3b, 4 (terms of service), 5 (full availability run), 6 (V4 order list) and beyond.
 - The user commits and pushes. Follow the working rules in `PROJECT_HANDOVER_CURRENT.md` section 19.
