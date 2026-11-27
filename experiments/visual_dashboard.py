@@ -40,7 +40,7 @@ Run:   python experiments/visual_dashboard.py --league-root league_data_fundamen
        python experiments/visual_dashboard.py --trade-replay   (replay its last website run)
        python experiments/visual_dashboard.py --sim          (synthetic feed, no league needed)
 Check: python experiments/visual_dashboard.py --selftest   (no GPU needed)
-Keys:  TAB next agent | SPACE pause | B bloom on/off, +/- bloom strength | ESC quit        (fullscreen by default; --windowed [--size 1600x900])
+Keys:  TAB next agent | SPACE pause | W website panel (trade feed) | B bloom on/off, +/- bloom strength | ESC quit        (fullscreen by default; --windowed [--size 1600x900])
 """
 
 from __future__ import annotations
@@ -252,9 +252,12 @@ class Mesh:
 # --------------------------------------------------------------------------
 # Camera: fixed perspective, high and slightly left of the desk
 # --------------------------------------------------------------------------
+CAM_EYE = (-12.49, 8.0, 7.19)
+
+
 class Camera:
     def __init__(self, aspect: float):
-        self.eye = np.array([-12.49, 8.0, 7.19], dtype=np.float32)      # 9e: behind-left of the fly, looking along +x at the monitor row
+        self.eye = np.array(CAM_EYE, dtype=np.float32)      # 9e: behind-left of the fly, looking along +x at the monitor row
         self.target = np.array([0.3, 1.0, 1.5], dtype=np.float32)
         self.base_fov = 36.0
         self.view = look_at(self.eye, self.target)
@@ -3185,19 +3188,21 @@ class SimFeed:
 # broker.live_feed.Mirror saves the bot's Edge window to orders/live_screen.jpg about once a second; this "wall screen" above the
 # main monitor shows the newest picture, so the website and the 3D scene can be watched in one window.
 # --------------------------------------------------------------------------
-WEB_W, WEB_H = 768, 474                          # same shape as the screen quad (2.4 x 1.48)
-WEB_LABEL_H = 14
+WEB_W, WEB_H = 1024, 632                         # same shape as the screen quad (2.4 x 1.48); more texels = sharper text
+WEB_LABEL_H = 22
 WEB_STALE_S = 120.0                              # older than this: labelled LAST SEEN instead of LIVE
-WEB_SCALE = 1.35
-WEB_GAP = 0.12                                   # between the main monitor's top edge and the wall screen
+WEB_SCALE = 1.75
+WEB_POS = (1.6, 3.85, 3.4)                       # above the right-hand monitor, in the open sky of the view
+WEB_CONTRAST, WEB_SHARPNESS = 1.35, 1.8          # legibility at a distance (the page is small text on white)
 
 
-def web_monitor_matrix() -> np.ndarray:
-    """Centred above the main monitor, same facing, no stand (a wall screen)."""
-    m = MAIN_MONITOR
-    top = m.pos[1] + MON_BODY[1] / 2 * m.scale
-    y = top + WEB_GAP + MON_BODY[1] / 2 * WEB_SCALE
-    return translate(m.x, y, m.z) @ rotate_y(math.radians(m.yaw_deg)) @ scale(WEB_SCALE)
+def web_monitor_matrix(eye=CAM_EYE, pos=WEB_POS, s: float = WEB_SCALE) -> np.ndarray:
+    """A wall screen (no stand) turned to face the camera head-on, so the website is not seen at a slant like the other monitors."""
+    p = np.asarray(pos, dtype=np.float64)
+    d = np.asarray(eye, dtype=np.float64) - p
+    yaw = math.atan2(d[0], d[2])                                   # local +z (the screen's face) toward the camera, then
+    pitch = -math.asin(d[1] / np.linalg.norm(d))                  # tilted up to it
+    return translate(*p) @ rotate_y(yaw) @ rotate_x(pitch) @ scale(s)
 
 
 def build_wall_monitor() -> Monitor:
@@ -3206,10 +3211,25 @@ def build_wall_monitor() -> Monitor:
     return Monitor(solid=body, led=m.led, screen=m.screen, screen_quad=m.screen_quad, boxes=[((0.0, 0.0, 0.0), MON_BODY)])
 
 
+WEB_OVL_W = 1.18                                  # width of the flat website panel in clip space (of 2.0)
+WEB_OVL_MARGIN = 0.02
+
+
+def web_overlay_quad(aspect: float):
+    """TL, TR, BR, BL of the flat website panel (W key): right side of the window, under the HUD bar, picture aspect kept."""
+    w = WEB_OVL_W
+    h = w * (WEB_H / WEB_W) * float(aspect)
+    hud_h = min(2.0 * float(aspect) * HUD_H / HUD_W, 0.6)
+    h = min(h, 2.0 - hud_h - 2 * WEB_OVL_MARGIN)
+    x1, y1 = 1.0 - WEB_OVL_MARGIN, 1.0 - hud_h - WEB_OVL_MARGIN
+    return [(x1 - w, y1, 0.0), (x1, y1, 0.0), (x1, y1 - h, 0.0), (x1 - w, y1 - h, 0.0)]
+
+
 class WebContent:
     """The newest picture of the fly's browser, letterboxed into the screen, with a LIVE / LAST SEEN label. Checks the file a few
     times a second and redraws only when it changed. No file yet: a waiting message."""
-    def __init__(self, path, check_every: float = 0.4, clock=time.time):
+    def __init__(self, path, check_every: float = 0.4, clock=time.time, enhance: bool = True):
+        self.enhance = enhance
         self.canvas = Canvas(WEB_W, WEB_H, COL_SCR_BG)
         self.path = Path(path) if path else None
         self.check_every, self.clock = check_every, clock
@@ -3218,7 +3238,7 @@ class WebContent:
 
     def _label(self, text, col):
         self.canvas.rect(0, 0, WEB_W, WEB_LABEL_H, COL_SCR_PANEL)
-        self.canvas.text(4, 3, text, col)
+        self.canvas.text(6, 4, text, col, 2)
 
     def _waiting(self):
         self.canvas.fill(COL_SCR_BG)
@@ -3226,13 +3246,16 @@ class WebContent:
         self.canvas.text(24, WEB_H // 2 - 10, "WAITING FOR THE FLY'S BROWSER", COL_SCR_DIM, 2)
 
     def _picture(self, mtime: float) -> bool:
-        from PIL import Image
+        from PIL import Image, ImageEnhance
         with Image.open(self.path) as im:
             im = im.convert("RGB")
             room_w, room_h = WEB_W, WEB_H - WEB_LABEL_H
             s = min(room_w / im.width, room_h / im.height)
             w, h = max(int(im.width * s), 1), max(int(im.height * s), 1)
-            px = np.asarray(im.resize((w, h), Image.BILINEAR), dtype=np.uint8)
+            im = im.resize((w, h), Image.LANCZOS)
+            if self.enhance:
+                im = ImageEnhance.Sharpness(ImageEnhance.Contrast(im).enhance(WEB_CONTRAST)).enhance(WEB_SHARPNESS)
+            px = np.asarray(im, dtype=np.uint8)
         self.canvas.fill(COL_SCR_BG)
         x0, y0 = (WEB_W - w) // 2, WEB_LABEL_H + (room_h - h) // 2
         self.canvas.px[y0:y0 + h, x0:x0 + w] = px
@@ -3244,7 +3267,8 @@ class WebContent:
             self._label(f"INVESTOPEDIA  LIVE {stamp}", COL_SCR_AMBER)
         return True
 
-    def update(self, vm, t: float = 0.0) -> bool:
+    def update(self, vm, t: float | None = None) -> bool:
+        t = time.monotonic() if t is None else t                 # the flat overlay (HudRenderer) calls update(vm) without a time
         if t - self._last_check < self.check_every:
             return False
         self._last_check = t
@@ -3455,7 +3479,7 @@ def make_feed(args):
 # Dashboard app (window, GL context, loop)
 # --------------------------------------------------------------------------
 class VisualDashboard:
-    def __init__(self, feed, fullscreen: bool = True, size=WINDOW_SIZE, bloom: bool = True, web_path=None):
+    def __init__(self, feed, fullscreen: bool = True, size=WINDOW_SIZE, bloom: bool = True, web_path=None, web_overlay=False):
         import moderngl
         import pygame
 
@@ -3511,6 +3535,8 @@ class VisualDashboard:
             wall, web_m = build_wall_monitor(), web_monitor_matrix()
             self.web_monitor = MonitorRenderer(self.ctx, self.prog, wall, flat_screen=False, model=web_m, react=False)
             self.web_screen = ScreenRenderer(self.ctx, wall.screen_quad, web_m, content=WebContent(web_path), react=False)
+        self.web_panel = HudRenderer(self.ctx, WebContent(web_path), web_overlay_quad, (WEB_W, WEB_H)) if web_path else None
+        self.web_panel_on = bool(web_overlay and web_path)
         self.props = PropsRenderer(self.ctx, self.prog, build_tower(), build_mug())
         self.hud = HudRenderer(self.ctx)
         self.log_panel = HudRenderer(self.ctx, LogContent(), log_quad_ndc, (LOG_W, LOG_H), rgba=True)
@@ -3541,6 +3567,8 @@ class VisualDashboard:
                     self.money_on = not self.money_on
                 elif e.key == self.pygame.K_p:
                     self.money_on = not self.money_on
+                elif e.key == self.pygame.K_w and self.web_panel is not None:
+                    self.web_panel_on = not self.web_panel_on
                 elif e.key == self.pygame.K_b and self.bloom is not None:
                     self.bloom_on = not self.bloom_on
                 elif e.key in (self.pygame.K_EQUALS, self.pygame.K_PLUS, self.pygame.K_KP_PLUS):
@@ -3584,9 +3612,6 @@ class VisualDashboard:
         self.side_screen.draw(self.scene, t, vm)
         self.ic_monitor.draw(self.scene, t, vm)
         self.ic_screen.draw(self.scene, t, vm)
-        if self.web_screen is not None:
-            self.web_monitor.draw(self.scene, t, vm)
-            self.web_screen.draw(self.scene, t, vm)
         self.props.draw(self.scene, t, vm)
         self.chair.draw(self.scene, t, vm)
         pose = self.body_pose.update(vm, t)     # eased lean / slump for this frame
@@ -3600,12 +3625,21 @@ class VisualDashboard:
                 self.bloom.present(self.bloom_strength)      # resolve + glow, onto the window
             except Exception as e:
                 self._drop_bloom(e)
+        if self.web_screen is not None:                      # after the glow pass: the white web page must stay sharp
+            import moderngl
+            if use_bloom:
+                self.ctx.disable(moderngl.DEPTH_TEST)        # the window's depth buffer is not this frame's (the scene went to the bloom
+            self.web_monitor.draw(self.scene, t, vm)         # target); the wall screen floats above the desk, nothing hides it
+            self.web_screen.draw(self.scene, t, vm)
+            self.ctx.enable(moderngl.DEPTH_TEST)
         self.hud.draw(self.win_size[0] / self.win_size[1], vm)      # screen-space overlays, over everything, never bloomed
         self.log_panel.draw(self.win_size[0] / self.win_size[1], vm)
         if self.money_on:
             self.money_panel.draw(self.win_size[0] / self.win_size[1], vm)
         if self.money_on:
             self.money_panel.draw(self.win_size[0] / self.win_size[1], vm)
+        if self.web_panel is not None and self.web_panel_on:
+            self.web_panel.draw(self.win_size[0] / self.win_size[1], vm)
 
     def run(self):
         last = time.perf_counter()
@@ -5442,6 +5476,7 @@ def parse_args(argv=None):
                     help="picture of the fly's browser for the 4th monitor (default with --trade-feed/--trade-replay: "
                          "live_screen.jpg next to the event file)")
     ap.add_argument("--no-web-screen", action="store_true", help="no 4th monitor")
+    ap.add_argument("--web-overlay", action="store_true", help="start with the large flat website panel shown (W toggles it)")
     ap.add_argument("--nice", type=int, default=5, help="raise this process's niceness (POSIX) so training keeps priority")
     ap.add_argument("--windowed", action="store_true", help="open a normal window instead of fullscreen")
     ap.add_argument("--size", default="1600x900", help="window size for --windowed, WxH")
@@ -5464,7 +5499,7 @@ def main(argv=None):
     except ValueError:
         w, h = WINDOW_SIZE
     VisualDashboard(make_feed(args), fullscreen=not args.windowed, size=(w, h), bloom=not args.no_bloom,
-                    web_path=web_screen_path(args)).run()
+                    web_path=web_screen_path(args), web_overlay=args.web_overlay).run()
 
 
 if __name__ == "__main__":

@@ -214,12 +214,24 @@ def test_web_screen_path_follows_the_trade_feed(tmp_path):
     assert vd.web_screen_path(vd.parse_args(["--web-screen", "pic.jpg"])).name == "pic.jpg"
 
 
-def test_the_wall_monitor_sits_above_the_main_one():
+def test_the_wall_monitor_floats_above_the_desk_and_faces_the_camera():
+    import numpy as np
     m = vd.web_monitor_matrix()
     main = vd.monitor_matrix(vd.MAIN_MONITOR)
     assert m[1, 3] > main[1, 3] + vd.MON_BODY[1] * vd.MON_SCALE / 2       # higher than the main monitor's top edge
-    assert abs(m[0, 3] - main[0, 3]) < 1e-9 and abs(m[2, 3] - main[2, 3]) < 1e-9
+    normal = m[:3, :3] @ np.array([0.0, 0.0, 1.0])                         # the screen's face
+    to_cam = np.array(vd.CAM_EYE) - m[:3, 3]
+    assert float(normal @ to_cam) / (np.linalg.norm(normal) * np.linalg.norm(to_cam)) > 0.999      # head-on, not slanted
     assert len(vd.build_wall_monitor().solid) < len(vd.build_monitor().solid)          # no stand
+
+
+def test_the_flat_website_panel_keeps_the_picture_shape_and_fits_under_the_hud():
+    for aspect in (16 / 9, 16 / 10, 21 / 9):
+        tl, tr, br, bl = vd.web_overlay_quad(aspect)
+        w, h = tr[0] - tl[0], tl[1] - bl[1]
+        assert tr[0] <= 1.0 and bl[1] >= -1.0 and tl[1] < 1.0               # inside the window, under the top bar
+        px_w, px_h = w * aspect, h                                          # NDC -> same-scale units
+        assert abs(px_w / px_h - vd.WEB_W / vd.WEB_H) < 0.02 or bl[1] + 1.0 < 0.05     # picture shape kept unless the height caps it
 
 
 def test_mirror_writes_the_picture_atomically_and_throttles(tmp_path):
