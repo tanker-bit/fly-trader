@@ -55,13 +55,15 @@ class FeatureRows:
     skipped_dates: list = field(default_factory=list)    # newer dates in the cache left out because too few members had prices
 
 
-def load_inputs(root="data_fundamentals", start="2000-01-01") -> Inputs:
-    """The same local caches the hybrid panel was built from. No downloads."""
+def load_inputs(root="data_fundamentals", start="2000-01-01", universe_dir=None) -> Inputs:
+    """The same local caches the hybrid panel was built from. No downloads. universe_dir: a fresher membership folder
+    (broker.live_universe, data_live/universe) to use instead of <root>/universe; prices and SEC data still come from root."""
     from experiments.build_dataset_price import load_all_prices
     root = Path(root)
-    iv = pd.read_csv(root / "universe" / "intervals.csv", parse_dates=["start", "end"])
-    cur = pd.read_csv(root / "universe" / "constituents.csv", parse_dates=["date_added"])
-    ciks = uni.cik_map(cur, iv, root / "universe" / "cik_overrides.csv")
+    ud = Path(universe_dir) if universe_dir else root / "universe"
+    iv = pd.read_csv(ud / "intervals.csv", parse_dates=["start", "end"])
+    cur = pd.read_csv(ud / "constituents.csv", parse_dates=["date_added"])
+    ciks = uni.cik_map(cur, iv, ud / "cik_overrides.csv")
     adj, cs, vol, spl, _ = load_all_prices(root, start, full=True)
     return Inputs(root, adj, cs, vol, spl, iv, ciks)
 

@@ -94,6 +94,10 @@ def run(a, log, browser=tu.browser, today=None, feed=None) -> str:
             "--data", a.data, "--live-prices", a.live_prices]
     if not a.no_refresh:
         args.append("--refresh-prices")
+        from broker import live_universe as lu
+        if lu.is_stale(a.live_universe):              # the index changes rarely: once a week is plenty
+            args.append("--refresh-membership")
+    args += ["--live-universe", a.live_universe]
     if a.offered_only:
         args.append("--offered-only")
     feed("phase", text="SCORING THE S&P 500" if a.no_refresh else "REFRESHING PRICES AND SCORING")
@@ -146,6 +150,7 @@ def parser():
     ap.add_argument("--flies", default="kept")
     ap.add_argument("--data", default="data_fundamentals")
     ap.add_argument("--live-prices", default="data_live/prices")
+    ap.add_argument("--live-universe", default="data_live/universe", help="fresh S&P 500 membership, refreshed weekly")
     ap.add_argument("--out", default="orders")
     ap.add_argument("--state", default="orders/policy_state.json")
     ap.add_argument("--profile", default=str(tu.DEFAULT_PROFILE))

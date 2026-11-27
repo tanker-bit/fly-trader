@@ -54,9 +54,9 @@ def add_frames(inp, adj, cs, vol, spl):
                    splits={**spl, **inp.splits})
 
 
-def load_market(root, live_dir=None, etfs=APPROVED_ETFS):
+def load_market(root, live_dir=None, etfs=APPROVED_ETFS, universe_dir=None):
     from tournament.live_features import load_inputs
-    inp = load_inputs(root)
+    inp = load_inputs(root, universe_dir=universe_dir)
     etf_dir = Path(root) / "prices_etf"
     if etf_dir.exists():
         inp = add_frames(inp, *load_frames(etfs, etf_dir))
@@ -112,11 +112,19 @@ def run_day(a, today=None, log=print) -> dict:
     log(f"account: {acc.source}: cash {acc.holdings.cash:,.2f}, {len(acc.holdings.shares)} positions")
 
     # 2) prices
+    from broker import live_universe as lu
+    if a.refresh_membership:
+        lu.refresh_membership(a.live_universe, Path(a.data) / "universe", log=log)
+    udir = lu.universe_dir(a.live_universe)
+    if udir:
+        log(f"membership: {udir} (fetched {lu.fetched_at(a.live_universe)})")
     if a.refresh_prices:
-        base = load_market(a.data)
-        members = _members_on(base, base.adj.index[-1])
-        refresh_prices(set(members) | set(core) | set(acc.holdings.shares), a.live_prices, log=log)
-    inp = load_market(a.data, a.live_prices)
+        base = load_market(a.data, universe_dir=udir)
+        members = set(_members_on(base, base.adj.index[-1]))
+        current = pd.read_csv(Path(udir or Path(a.data) / "universe") / "constituents.csv")["symbol"]
+        members |= set(current)                     # a newly added member has no price file yet: fetch it too
+        refresh_prices(members | set(core) | set(acc.holdings.shares), a.live_prices, log=log)
+    inp = load_market(a.data, a.live_prices, universe_dir=udir)
 
     # 3) features and scores
     feats = feature_rows(inp, asof=a.asof, log=log)
@@ -189,6 +197,8 @@ def parser():
     ap.add_argument("--data", default="data_fundamentals", help="research caches: prices, prices_etf, universe, sec")
     ap.add_argument("--live-prices", default="data_live/prices", help="folder for refreshed prices (never the research caches)")
     ap.add_argument("--refresh-prices", action="store_true", help="download fresh Yahoo prices first (a few minutes)")
+    ap.add_argument("--live-universe", default="data_live/universe", help="fresh S&P 500 membership (used when present)")
+    ap.add_argument("--refresh-membership", action="store_true", help="fetch the S&P 500 list from Wikipedia first")
     ap.add_argument("--portfolio", default="fresh", help="fresh | live | path to a snapshot .json")
     ap.add_argument("--cash", type=float, default=100_000.0, help="cash of a fresh account (the game starts with 100,000)")
     ap.add_argument("--lib-dir", default=None)
