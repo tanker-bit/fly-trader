@@ -181,3 +181,60 @@ def test_run_orders_emits_search_quote_preview_result():
     res = run_orders(Site(), [order], log=lambda m: None)
     assert res[0]["status"] == "submitted"
     assert [k for k, _ in events] == ["search", "quote", "preview", "result"] and events[-1][1]["score"] == 0.7
+
+
+# ---------------------------------------------------------------- the 4th monitor: the fly's browser
+def test_web_screen_waits_then_shows_the_newest_picture_with_a_label(tmp_path):
+    import os
+    import numpy as np
+    from PIL import Image
+    f = tmp_path / "live_screen.jpg"
+    now = [1_000_000.0]
+    c = vd.WebContent(f, check_every=0.0, clock=lambda: now[0])
+    assert c.update(None, 0.0) and c._state == "waiting"
+    assert not c.update(None, 1.0)                                         # nothing new: no redraw
+    Image.new("RGB", (1280, 900), (200, 30, 30)).save(f, quality=90)
+    os.utime(f, (now[0], now[0]))
+    assert c.update(None, 2.0) and c._state == "live"
+    mid = c.canvas.px[vd.WEB_H // 2, vd.WEB_W // 2]
+    assert mid[0] > 150 and mid[1] < 80                                     # the picture is on the screen
+    assert (c.canvas.px[:vd.WEB_LABEL_H] == np.array(vd.COL_SCR_AMBER, np.uint8)).all(axis=2).any()   # LIVE label in amber
+    now[0] += vd.WEB_STALE_S + 1
+    assert c.update(None, 3.0) and c._state == "stale"                     # an old picture is labelled LAST SEEN
+    f.write_bytes(b"not a jpeg")
+    os.utime(f, (now[0], now[0]))
+    assert not c.update(None, 4.0) and c._state == "stale"                 # a broken file keeps the last good picture
+
+
+def test_web_screen_path_follows_the_trade_feed(tmp_path):
+    assert vd.web_screen_path(vd.parse_args([])) is None
+    assert str(vd.web_screen_path(vd.parse_args(["--trade-feed"]))).replace("\\", "/") == "orders/live_screen.jpg"
+    assert vd.web_screen_path(vd.parse_args(["--trade-feed", str(tmp_path / "x" / "f.jsonl")])) == tmp_path / "x" / "live_screen.jpg"
+    assert vd.web_screen_path(vd.parse_args(["--trade-replay", "--no-web-screen"])) is None
+    assert vd.web_screen_path(vd.parse_args(["--web-screen", "pic.jpg"])).name == "pic.jpg"
+
+
+def test_the_wall_monitor_sits_above_the_main_one():
+    m = vd.web_monitor_matrix()
+    main = vd.monitor_matrix(vd.MAIN_MONITOR)
+    assert m[1, 3] > main[1, 3] + vd.MON_BODY[1] * vd.MON_SCALE / 2       # higher than the main monitor's top edge
+    assert abs(m[0, 3] - main[0, 3]) < 1e-9 and abs(m[2, 3] - main[2, 3]) < 1e-9
+    assert len(vd.build_wall_monitor().solid) < len(vd.build_monitor().solid)          # no stand
+
+
+def test_mirror_writes_the_picture_atomically_and_throttles(tmp_path):
+    from broker.live_feed import Mirror
+    shots = []
+
+    class Page:
+        def screenshot(self, path, type, quality):
+            shots.append(path)
+            open(path, "wb").write(b"jpeg")
+
+    t = [0.0]
+    m = Mirror(tmp_path / "live_screen.jpg", every=0.6)
+    m._clock = lambda: t[0]
+    assert m(Page()) and (tmp_path / "live_screen.jpg").read_bytes() == b"jpeg" and not (tmp_path / "live_screen.jpg.tmp").exists()
+    t[0] = 0.3
+    assert not m(Page()) and m(Page(), force=True)                        # throttled unless forced
+    assert not Mirror(tmp_path / "x.jpg")(object())                        # a page that cannot screenshot: ignored

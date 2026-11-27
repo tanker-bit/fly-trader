@@ -153,7 +153,7 @@ Run in `cmd` at home, from `D:\github\fly-trader\fly-trader` (replace `E:` with 
 4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the files in section 2).
 5. `git merge lab/lab-work`
 6. `git status --short --untracked-files=all`: the price and SEC data should be gone from the list (about 35 entries left, all code, tests, docs and small csvs).
-7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 340: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 11 V5 + 11 autopilot + 10 dashboard feed, as on the lab PC (350); install Playwright first, `pip install playwright`, or 5 V5 tests are skipped).
+7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 354: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 11 V5 + 11 autopilot + 14 dashboard feed, as on the lab PC; install Playwright first, `pip install playwright`, or 5 V5 tests are skipped).
 8. When done with the drive: `git remote remove lab`.
 
 The merged commit lands on whatever branch is checked out at home (normally `trading-t1-account`). Nothing is pushed; the user pushes when ready.
@@ -237,6 +237,17 @@ The user asked (lab, 2026-11-27) to see the fly search tickers in the 3D dashboa
 python experimentsisual_dashboard.py --trade-feed --windowed      (then start the autopilot in another window)
 python experimentsisual_dashboard.py --trade-replay --windowed    (replay the last run)
 ```
+
+### Dashboard 4th monitor: the fly's browser (the Investopedia website inside the 3D scene)
+
+- `broker.live_feed.Mirror` saves the bot's Edge window to `orders/live_screen.jpg` (JPEG, at most every 0.6 s while it waits, and after the quote, the preview, the submit and each account page); swapped in atomically.
+- `experiments/visual_dashboard.py`: a 4th "wall screen" (no stand, scale 1.35) above the main monitor, `WebContent` letterboxes the newest picture with an `INVESTOPEDIA LIVE hh:mm:ss` label (`LAST SEEN` after 120 s; `WAITING FOR THE FLY'S BROWSER` before the first picture). Shown automatically with `--trade-feed` / `--trade-replay` (picture next to the event file), or `--web-screen PATH`; `--no-web-screen` hides it. `ScreenRenderer` textures now take the content's own size.
+- **Headless does not work on this site:** on 2026-11-27 a headless Edge got Cloudflare's "Just a moment..." page instead of the Trade tab. Not worked around. Instead `--offscreen` (trade_ui and autopilot) opens the normal window off the screen, so the 4th monitor is where you watch it. Checked on the lab PC: a 3-order preview-only run with `--offscreen` previewed JBL and CDNS, skipped BE (price check), and the 4th monitor's picture showed the CDNS order form under `INVESTOPEDIA LIVE 13:50:42`.
+```
+python experimentsisual_dashboard.py --trade-feed --windowed     (window 1: the dashboard with all 4 monitors)
+python -m broker.autopilot --offscreen                              (window 2: the fly's day; its browser is off screen)
+```
+- Tests: 4 more in `tests/test_trade_feed.py` (14 in all). Full suite on the lab PC: 354 passed.
 
 **Scheduling (not set up in the lab):** one run per trading day after 16:15 New York time, e.g. a Windows scheduled task at home (adjust the time to the PC's time zone; 16:45 New York = 16:45 Eastern):
 ```

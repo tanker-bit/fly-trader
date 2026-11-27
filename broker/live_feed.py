@@ -69,3 +69,36 @@ def last_run(path) -> list:
     ev, _ = read_new(path, 0)
     starts = [i for i, e in enumerate(ev) if e.get("kind") == "start"]
     return ev[starts[-1]:] if starts else ev
+
+
+SCREEN = Path("orders") / "live_screen.jpg"
+
+
+class Mirror:
+    """Saves what the fly's browser shows to a JPEG (default orders/live_screen.jpg) for the dashboard's website monitor.
+    At most one picture every `every` seconds unless forced; written to a temporary file and swapped in, so the dashboard never
+    reads half a picture. Never fails a trading run."""
+
+    def __init__(self, path=SCREEN, every: float = 0.6, quality: int = 60):
+        import time as _time
+        self.path, self.every, self.quality, self._clock, self._last = Path(path), every, quality, _time.monotonic, -1e9
+
+    def __call__(self, page, force: bool = False):
+        now = self._clock()
+        if not force and now - self._last < self.every:
+            return False
+        self._last = now
+        try:
+            import os
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            page.screenshot(path=str(tmp), type="jpeg", quality=self.quality)
+            os.replace(tmp, self.path)
+            return True
+        except Exception:
+            return False
+
+
+def no_mirror(page, force: bool = False):
+    return False
+

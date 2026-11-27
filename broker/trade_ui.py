@@ -139,10 +139,11 @@ def should_accept(results: list) -> bool:
 
 # ---------------------------------------------------------------- the website
 class TradeSite:
-    def __init__(self, page, shots: Path | None = None, pause: float = 1.5, log=print, emit=None):
-        from broker.live_feed import nothing
+    def __init__(self, page, shots: Path | None = None, pause: float = 1.5, log=print, emit=None, mirror=None):
+        from broker.live_feed import no_mirror, nothing
         self.page, self.shots, self.pause, self.log, self.n = page, shots, pause, log, 0
         self.emit = emit or nothing                   # broker.live_feed.Feed: the 3D dashboard shows what happens here
+        self.mirror = mirror or no_mirror             # broker.live_feed.Mirror: the dashboard's website monitor
 
     def shot(self, name):
         if self.shots:
@@ -151,7 +152,13 @@ class TradeSite:
             self.page.screenshot(path=str(self.shots / f"{self.n:03d}_{name}.png"))
 
     def wait(self, k=1.0):
-        time.sleep(self.pause * k)
+        end = time.monotonic() + self.pause * k
+        while True:                                   # keep the dashboard's website monitor fresh while waiting
+            self.mirror(self.page)
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(left, 0.3))
 
     def open_trade(self, url=TRADE_URL):
         self.page.goto(url)
@@ -206,6 +213,7 @@ class TradeSite:
         except Exception as e:
             raise SiteChanged("the stock panel with Bid/Ask did not appear") from e
         panel = parse_panel(self.text("form"))
+        self.mirror(self.page, force=True)
         self.emit("quote", symbol=sym, **panel)
         self.choose("action", SIDES[order["side"]])
         self.choose("order_type", "Market")
@@ -239,6 +247,7 @@ class TradeSite:
         self.wait()
         items = [x.inner_text() for x in self.page.locator(SEL["pv_items"]).all()]
         pv = parse_preview(self.text("pv_type"), self.text("pv_symbol"), self.text("pv_qty"), items)
+        self.mirror(self.page, force=True)
         side = "SELL" if "sell" in pv["type"].lower() else "BUY"
         self.emit("preview", symbol=pv["symbol"], side=side, shares=pv["qty"], est_price=pv["est_price"], est_total=pv["est_total"])
         return pv
@@ -259,6 +268,7 @@ class TradeSite:
             raise SiteChanged(f"the submit button reads {s.inner_text()!r}")
         s.click()
         self.wait(3)
+        self.mirror(self.page, force=True)
         msgs = []
         for sel in ('[role="alert"]', ".v-snackbar", '[role="dialog"]', ".v-overlay__content"):
             for x in self.page.locator(sel).all():
@@ -346,10 +356,16 @@ def read_orders(path: Path) -> list:
     return rows
 
 
-def browser(profile: Path, headless=False):
+OFFSCREEN_ARGS = ["--window-position=-2600,0"]   # a normal visible window, just placed off the screen (watch it on the dashboard)
+
+
+def browser(profile: Path, headless=False, offscreen=False):
+    """The bot's Edge. Not headless by default: on 2026-11-27 a headless Edge only got Cloudflare's "Just a moment..." page instead of
+    the simulator, so the bot uses a normal window; --offscreen moves that window out of view."""
     from playwright.sync_api import sync_playwright
     pw = sync_playwright().start()
-    ctx = pw.chromium.launch_persistent_context(str(profile), channel="msedge", headless=headless, viewport={"width": 1280, "height": 900})
+    ctx = pw.chromium.launch_persistent_context(str(profile), channel="msedge", headless=headless, viewport={"width": 1280, "height": 900},
+                                                args=OFFSCREEN_ARGS if offscreen else [])
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     return pw, ctx, page
 
@@ -385,7 +401,8 @@ def main(argv=None):
     ap.add_argument("--preview-only", action="store_true", help="fill in and preview every order, never submit")
     ap.add_argument("--max-drift", type=float, default=0.05, help="skip an order if the live price moved more than this from the plan")
     ap.add_argument("--no-accept", action="store_true", help="do not accept the day's policy memory automatically")
-    ap.add_argument("--headless", action="store_true", help="no visible window (not recommended: you cannot watch it)")
+    ap.add_argument("--headless", action="store_true", help="no window at all (does NOT work on this site: Cloudflare stops it)")
+    ap.add_argument("--offscreen", action="store_true", help="a normal window placed off the screen; watch it on the dashboard's 4th monitor")
     a = ap.parse_args(argv)
     profile = Path(a.profile).resolve()
     if a.login:
@@ -396,12 +413,12 @@ def main(argv=None):
     orders = read_orders(day / "orders.csv")
     print(f"{len(orders)} orders for {a.date} from {day / 'orders.csv'}; {'PREVIEW ONLY' if a.preview_only else 'SUBMITTING'}; "
           f"create {Path(a.orders_dir) / 'STOP'} to halt between orders")
-    from broker.live_feed import Feed
+    from broker.live_feed import Feed, Mirror
     feed = Feed(Path(a.orders_dir) / "live_feed.jsonl")
     feed("start", mode="preview" if a.preview_only else "trading", asof=a.date)
-    pw, ctx, page = browser(profile, a.headless)
+    pw, ctx, page = browser(profile, a.headless, a.offscreen)
     try:
-        site = TradeSite(page, shots=day / "screens", emit=feed)
+        site = TradeSite(page, shots=day / "screens", emit=feed, mirror=Mirror(Path(a.orders_dir) / "live_screen.jpg"))
         results = run_orders(site, orders, a.preview_only, a.max_drift, Path(a.orders_dir) / "STOP")
     finally:
         ctx.close()

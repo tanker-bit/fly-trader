@@ -101,7 +101,7 @@ def check_totals(acct: SiteAccount, tol=0.01, floor=50.0):
                                f"{acct.account_value:,.2f} (gap {gap:,.2f}): refusing to trade on this read")
 
 
-def read_account(page, wait=8.0, log=print) -> SiteAccount:
+def read_account(page, wait=8.0, log=print, mirror=None) -> SiteAccount:
     import time
     page.goto(PORTFOLIO_URL)
     try:
@@ -112,6 +112,8 @@ def read_account(page, wait=8.0, log=print) -> SiteAccount:
             raise NotSignedIn("not signed in: run  python -m broker.trade_ui --login") from e
         raise AccountReadError("the Portfolio page has no holdings table") from e
     time.sleep(wait)
+    if mirror:
+        mirror(page, force=True)
 
     def num(cy):
         loc = page.locator(f'[data-cy="{cy}"]')
@@ -132,6 +134,8 @@ def read_account(page, wait=8.0, log=print) -> SiteAccount:
     except Exception as e:
         raise AccountReadError("the Order Status page has no open-trade table") from e
     time.sleep(wait / 2)
+    if mirror:
+        mirror(page, force=True)
     ot = page.evaluate(TABLES_JS, '[data-cy="open-trade-table"]') or []
     ft = page.evaluate(TABLES_JS, '[data-cy="failed-trade-table"]') or []
     acct.open_orders = parse_orders(ot[0]["head"], ot[0]["rows"]) if ot else []

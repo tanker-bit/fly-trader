@@ -26,7 +26,7 @@ import json
 from pathlib import Path
 
 from broker import daily_run as dr
-from broker.live_feed import Feed
+from broker.live_feed import Feed, Mirror
 from broker import site_account as sa
 from broker import trade_ui as tu
 
@@ -63,15 +63,16 @@ def run(a, log, browser=tu.browser, today=None, feed=None) -> str:
     out = Path(a.out)
     profile = Path(a.profile).resolve()
     feed = feed or Feed(out / "live_feed.jsonl")
+    mirror = Mirror(out / "live_screen.jpg")
     if (out / "STOP").exists():
         return f"skipped: {out / 'STOP'} exists"
     feed("start", mode="preview" if a.preview_only else "trading")
     feed("phase", text="READING ACCOUNT ON THE WEBSITE")
 
     # 1-2) the account, as the website shows it
-    pw, ctx, page = browser(profile, a.headless)
+    pw, ctx, page = browser(profile, a.headless, a.offscreen)
     try:
-        acct = sa.read_account(page, log=log)
+        acct = sa.read_account(page, log=log, mirror=mirror)
     finally:
         ctx.close()
         pw.stop()
@@ -112,9 +113,9 @@ def run(a, log, browser=tu.browser, today=None, feed=None) -> str:
 
     # 6) the website
     orders = tu.read_orders(day_dir / "orders.csv")
-    pw, ctx, page = browser(profile, a.headless)
+    pw, ctx, page = browser(profile, a.headless, a.offscreen)
     try:
-        site = tu.TradeSite(page, shots=day_dir / "screens", log=log, emit=feed)
+        site = tu.TradeSite(page, shots=day_dir / "screens", log=log, emit=feed, mirror=mirror)
         results = tu.run_orders(site, orders, a.preview_only, a.max_drift, out / "STOP", log=log)
     finally:
         ctx.close()
@@ -148,7 +149,8 @@ def parser():
     ap.add_argument("--out", default="orders")
     ap.add_argument("--state", default="orders/policy_state.json")
     ap.add_argument("--profile", default=str(tu.DEFAULT_PROFILE))
-    ap.add_argument("--headless", action="store_true", help="no visible window (for an unattended machine)")
+    ap.add_argument("--headless", action="store_true", help="no window at all (does NOT work on this site: Cloudflare stops it)")
+    ap.add_argument("--offscreen", action="store_true", help="a normal window placed off the screen; watch it on the dashboard's 4th monitor")
     return ap
 
 

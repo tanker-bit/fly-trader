@@ -77,7 +77,7 @@ class FakeBrowser:
     def __init__(self):
         self.opened = 0
 
-    def __call__(self, profile, headless=False):
+    def __call__(self, profile, headless=False, offscreen=False):
         self.opened += 1
         close = SimpleNamespace(close=lambda: None, stop=lambda: None)
         return close, close, SimpleNamespace()
@@ -92,7 +92,7 @@ def setup(monkeypatch, tmp_path, *, open_orders=(), notes=(), orders=1, results=
     (day / "orders.csv").write_text("side,symbol,game_symbol,shares,est_price,est_value,rank,score,reason\n" +
                                     "".join("BUY,JBL,JBL,13,228.0,2964.0,3,1.2,new holding\n" for _ in plan_orders))
     acct = sa.SiteAccount(100_000.0, 100_000.0, 100_000.0, [], list(open_orders), [])
-    monkeypatch.setattr(sa, "read_account", lambda page, log=print: acct)
+    monkeypatch.setattr(sa, "read_account", lambda page, log=print, **kw: acct)
     calls = dict(run_day=0, run_orders=0)
 
     def fake_run_day(a, today=None, log=print):

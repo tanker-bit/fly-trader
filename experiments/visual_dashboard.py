@@ -1972,7 +1972,7 @@ class ScreenRenderer:
         self.prog = ctx.program(vertex_shader=SCR_VERT, fragment_shader=SCR_FRAG)
         self.vbo = ctx.buffer(screen_quad_geo(quad).tobytes())
         self.vao = ctx.vertex_array(self.prog, [(self.vbo, "3f 2f", "in_pos", "in_uv")])
-        self.tex = ctx.texture((SCREEN_W, SCREEN_H), 3, self.content.canvas.px.tobytes())
+        self.tex = ctx.texture((self.content.canvas.w, self.content.canvas.h), 3, self.content.canvas.px.tobytes())
         self.tex.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
         try:
             self.tex.anisotropy = 8.0                      # the screen is seen at a steep angle
@@ -3180,6 +3180,95 @@ class SimFeed:
             self._thread.join(timeout=2.0)
 
 
+# --------------------------------------------------------------------------
+# 4th monitor: the fly's own browser on the Investopedia website (trade feed only)
+# broker.live_feed.Mirror saves the bot's Edge window to orders/live_screen.jpg about once a second; this "wall screen" above the
+# main monitor shows the newest picture, so the website and the 3D scene can be watched in one window.
+# --------------------------------------------------------------------------
+WEB_W, WEB_H = 768, 474                          # same shape as the screen quad (2.4 x 1.48)
+WEB_LABEL_H = 14
+WEB_STALE_S = 120.0                              # older than this: labelled LAST SEEN instead of LIVE
+WEB_SCALE = 1.35
+WEB_GAP = 0.12                                   # between the main monitor's top edge and the wall screen
+
+
+def web_monitor_matrix() -> np.ndarray:
+    """Centred above the main monitor, same facing, no stand (a wall screen)."""
+    m = MAIN_MONITOR
+    top = m.pos[1] + MON_BODY[1] / 2 * m.scale
+    y = top + WEB_GAP + MON_BODY[1] / 2 * WEB_SCALE
+    return translate(m.x, y, m.z) @ rotate_y(math.radians(m.yaw_deg)) @ scale(WEB_SCALE)
+
+
+def build_wall_monitor() -> Monitor:
+    m = build_monitor()
+    body = transform_geo(box_geo(*MON_BODY, COL_MON_BODY), translate(0.0, 0.0, 0.0))
+    return Monitor(solid=body, led=m.led, screen=m.screen, screen_quad=m.screen_quad, boxes=[((0.0, 0.0, 0.0), MON_BODY)])
+
+
+class WebContent:
+    """The newest picture of the fly's browser, letterboxed into the screen, with a LIVE / LAST SEEN label. Checks the file a few
+    times a second and redraws only when it changed. No file yet: a waiting message."""
+    def __init__(self, path, check_every: float = 0.4, clock=time.time):
+        self.canvas = Canvas(WEB_W, WEB_H, COL_SCR_BG)
+        self.path = Path(path) if path else None
+        self.check_every, self.clock = check_every, clock
+        self._mtime, self._last_check, self._state = None, -1e9, None
+        self.draws = 0
+
+    def _label(self, text, col):
+        self.canvas.rect(0, 0, WEB_W, WEB_LABEL_H, COL_SCR_PANEL)
+        self.canvas.text(4, 3, text, col)
+
+    def _waiting(self):
+        self.canvas.fill(COL_SCR_BG)
+        self._label("INVESTOPEDIA", COL_SCR_DIM)
+        self.canvas.text(24, WEB_H // 2 - 10, "WAITING FOR THE FLY'S BROWSER", COL_SCR_DIM, 2)
+
+    def _picture(self, mtime: float) -> bool:
+        from PIL import Image
+        with Image.open(self.path) as im:
+            im = im.convert("RGB")
+            room_w, room_h = WEB_W, WEB_H - WEB_LABEL_H
+            s = min(room_w / im.width, room_h / im.height)
+            w, h = max(int(im.width * s), 1), max(int(im.height * s), 1)
+            px = np.asarray(im.resize((w, h), Image.BILINEAR), dtype=np.uint8)
+        self.canvas.fill(COL_SCR_BG)
+        x0, y0 = (WEB_W - w) // 2, WEB_LABEL_H + (room_h - h) // 2
+        self.canvas.px[y0:y0 + h, x0:x0 + w] = px
+        age = self.clock() - mtime
+        stamp = time.strftime("%H:%M:%S", time.localtime(mtime))
+        if age > WEB_STALE_S:
+            self._label(f"INVESTOPEDIA  LAST SEEN {stamp}", COL_SCR_DIM)
+        else:
+            self._label(f"INVESTOPEDIA  LIVE {stamp}", COL_SCR_AMBER)
+        return True
+
+    def update(self, vm, t: float = 0.0) -> bool:
+        if t - self._last_check < self.check_every:
+            return False
+        self._last_check = t
+        try:
+            mtime = self.path.stat().st_mtime if self.path is not None and self.path.exists() else None
+        except OSError:
+            mtime = None
+        if mtime is None:
+            if self._state == "waiting":
+                return False
+            self._waiting()
+            self._state, self.draws = "waiting", self.draws + 1
+            return True
+        stale = self.clock() - mtime > WEB_STALE_S
+        if mtime == self._mtime and self._state == ("stale" if stale else "live"):
+            return False
+        try:
+            self._picture(mtime)
+        except Exception:
+            return False                          # half-written or unreadable: keep the last good picture
+        self._mtime, self._state, self.draws = mtime, ("stale" if stale else "live"), self.draws + 1
+        return True
+
+
 class TradeFeed:
     """The fly trading on the Investopedia website, live or replayed. broker.autopilot / broker.trade_ui append events to a JSON-lines
     file (broker/live_feed.py); a thread tails it and the render thread plays them one by one: the main monitor shows the ticker the
@@ -3366,7 +3455,7 @@ def make_feed(args):
 # Dashboard app (window, GL context, loop)
 # --------------------------------------------------------------------------
 class VisualDashboard:
-    def __init__(self, feed, fullscreen: bool = True, size=WINDOW_SIZE, bloom: bool = True):
+    def __init__(self, feed, fullscreen: bool = True, size=WINDOW_SIZE, bloom: bool = True, web_path=None):
         import moderngl
         import pygame
 
@@ -3417,6 +3506,11 @@ class VisualDashboard:
         ic_m = monitor_matrix(IC_MONITOR)
         self.ic_monitor = MonitorRenderer(self.ctx, self.prog, mon, flat_screen=False, model=ic_m, react=False)
         self.ic_screen = ScreenRenderer(self.ctx, mon.screen_quad, ic_m, content=IcContent(), react=False)
+        self.web_monitor = self.web_screen = None
+        if web_path:                                   # 4th monitor: the fly's browser on the website
+            wall, web_m = build_wall_monitor(), web_monitor_matrix()
+            self.web_monitor = MonitorRenderer(self.ctx, self.prog, wall, flat_screen=False, model=web_m, react=False)
+            self.web_screen = ScreenRenderer(self.ctx, wall.screen_quad, web_m, content=WebContent(web_path), react=False)
         self.props = PropsRenderer(self.ctx, self.prog, build_tower(), build_mug())
         self.hud = HudRenderer(self.ctx)
         self.log_panel = HudRenderer(self.ctx, LogContent(), log_quad_ndc, (LOG_W, LOG_H), rgba=True)
@@ -3490,6 +3584,9 @@ class VisualDashboard:
         self.side_screen.draw(self.scene, t, vm)
         self.ic_monitor.draw(self.scene, t, vm)
         self.ic_screen.draw(self.scene, t, vm)
+        if self.web_screen is not None:
+            self.web_monitor.draw(self.scene, t, vm)
+            self.web_screen.draw(self.scene, t, vm)
         self.props.draw(self.scene, t, vm)
         self.chair.draw(self.scene, t, vm)
         pose = self.body_pose.update(vm, t)     # eased lean / slump for this frame
@@ -5317,6 +5414,17 @@ def _selftest_bridge(check) -> bool:
     return len(_FAILS) == start
 
 
+def web_screen_path(args):
+    """The picture shown on the 4th monitor: --web-screen, else live_screen.jpg next to the trade event file, else none."""
+    if getattr(args, "no_web_screen", False):
+        return None
+    if getattr(args, "web_screen", None):
+        return Path(args.web_screen)
+    if getattr(args, "trade_feed", None) or getattr(args, "trade_replay", False):
+        return Path(args.trade_feed or "orders/live_feed.jsonl").with_name("live_screen.jpg")
+    return None
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="STONKFLY 3D visual dashboard")
     ap.add_argument("--league-root", default=os.environ.get("STONKFLY_LEAGUE", "league_data_fundamentals"),
@@ -5330,6 +5438,10 @@ def parse_args(argv=None):
     ap.add_argument("--trade-feed", nargs="?", const="orders/live_feed.jsonl", default=None,
                     help="show the fly trading on the website, live (event file written by broker.autopilot / broker.trade_ui)")
     ap.add_argument("--trade-replay", action="store_true", help="replay the last website run from the event file")
+    ap.add_argument("--web-screen", default=None,
+                    help="picture of the fly's browser for the 4th monitor (default with --trade-feed/--trade-replay: "
+                         "live_screen.jpg next to the event file)")
+    ap.add_argument("--no-web-screen", action="store_true", help="no 4th monitor")
     ap.add_argument("--nice", type=int, default=5, help="raise this process's niceness (POSIX) so training keeps priority")
     ap.add_argument("--windowed", action="store_true", help="open a normal window instead of fullscreen")
     ap.add_argument("--size", default="1600x900", help="window size for --windowed, WxH")
@@ -5351,7 +5463,8 @@ def main(argv=None):
         w, h = (int(v) for v in args.size.lower().split("x"))
     except ValueError:
         w, h = WINDOW_SIZE
-    VisualDashboard(make_feed(args), fullscreen=not args.windowed, size=(w, h), bloom=not args.no_bloom).run()
+    VisualDashboard(make_feed(args), fullscreen=not args.windowed, size=(w, h), bloom=not args.no_bloom,
+                    web_path=web_screen_path(args)).run()
 
 
 if __name__ == "__main__":
