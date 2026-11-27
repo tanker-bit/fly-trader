@@ -28,10 +28,10 @@ The copy's files are owned by the home Windows account, so git on the lab PC ref
 | 7 | `tournament/live_features.py` | **new, V4b-2**: today's feature rows from the local caches, built exactly like `panel_hybrid.parquet` (details below) | committed on `lab-work`, tested |
 | 8 | `tests/test_live_features.py` | **new**: 8 tests for V4b-2 (3 use the real `data_fundamentals` caches; skipped where absent) | committed on `lab-work`, tested |
 | 9 | `accounts/order_plan.py` | **new, V4c**: game account + scores -> one hold-policy day on a shadow account -> orders with reasons | committed on `lab-work`, tested |
-| 10 | `broker/live_prices.py` | **new, V4d**: Yahoo refresh into a separate `data_live/prices` folder, overlaid on the research caches | committed on `lab-work`, tested with fakes; **real download not run** |
+| 10 | `broker/live_prices.py` | **new, V4d**: Yahoo refresh into a separate `data_live/prices` folder, overlaid on the research caches; drops today's unfinished bar | committed on `lab-work`, tested; **real refresh ran on the lab PC** (506 of 506 ok) |
 | 11 | `broker/game_portfolio.py` | **new, V4d**: READ-ONLY game account (live through the bridge, snapshot file, or fresh) | committed on `lab-work`; converters tested; **live read not run** (bridge + login are at home) |
 | 12 | `broker/daily_run.py` | **new, V4d**: the daily dry-run command and `--accept` | committed on `lab-work`, tested end to end on the local caches |
-| 13 | `tests/test_order_plan.py`, `tests/test_daily_run.py` | **new**: 11 + 8 tests | committed on `lab-work`, tested |
+| 13 | `tests/test_order_plan.py`, `tests/test_daily_run.py` | **new**: 11 + 9 tests | committed on `lab-work`, tested |
 | 14 | `.gitignore` | added `orders/`, `data_live/`, `game_snapshot*.json` (the user's game account and order lists) | committed on `lab-work` |
 
 The lab commits hold lab work only. The 7 modified and 26 untracked files from home were deliberately left out (still uncommitted in the copy). Use Route A below.
@@ -102,9 +102,12 @@ python -m broker.daily_run --accept 2026-11-06               (after placing that
 - `--portfolio live` uses the bridge read-only (`broker/session_guard.py`), no trade class is imported, and the working folder is restored afterwards. Snapshot files carry no game ids.
 - Lab run (2026-11-27, fresh account, full committee, no refresh): data date 2026-11-06 (9 thinner newer dates skipped), full rebalance, 26 buys (20 stocks, 3 sleeve names, VTI/RSP/QQQ), cash left 2,829, ETF core 34.5%; 12 high-ranked names passed over by the falling-knife guard. Tests: **317 passed**.
 
+**Real price refresh on the lab PC (2026-11-27):** `python -m broker.daily_run --refresh-prices` downloaded 506 of 506 symbols (S&P 500 members, VTI/RSP/QQQ) in about 3 minutes into `data_live/prices` (not committed; git-ignored).
+- **Bug found and fixed:** the first refresh ran at 12:47 New York time while the market was open (a half day). Yahoo returned a partial bar for 2026-11-27 (AAPL at about a quarter of a normal day's volume), and the plan was built on intraday prices. `refresh_one` now drops a bar dated today until 16:15 New York time (`CLOSED_AFTER`; half days are simply treated as unfinished until then). Test added; the flawed `orders\2026-11-27` output was deleted and the refresh rerun.
+- Corrected dry run: data date **2026-11-25** (Thanksgiving 11-26 closed), 499 of 503 members scored, full rebalance, 26 buys, cash left 2,565, ETF core 34.2%. `SNDK`'s file ends 2026-11-19, so it is scored on its last known price; the run now names such stocks in its notes and `run.json` (`no_price_today`).
+
 Open points for V4d (not verified on the lab PC):
 - **Live game read** (`--portfolio live`) never ran: needs the bridge and login at home. Check that `purchase_price` from the library is a **per-share** price (the planner flags odd ratios); the stop-loss depends on it.
-- **Price refresh** never ran for real (only with a fake downloader): first real run will take a few minutes for about 540 symbols.
 - **Availability**: `data_us/game_availability.csv` has only the 50-stock test run (all yes). 493 of 500 scored stocks are "unknown" and allowed by default; run the full V3 availability check or use `--offered-only`. The core ETFs' availability in the game is also unchecked.
 - **Membership and SEC data are not refreshed**: S&P 500 changes after `universe/intervals.csv` was built, and filings after the SEC cache, are missing. Refreshing SEC needs a User-Agent with a name and email (ask the user first).
 - The game uses market orders at the next open with a 20-minute delay; the plan's prices are estimates.
@@ -146,7 +149,7 @@ Run in `cmd` at home, from `D:\github\fly-trader\fly-trader` (replace `E:` with 
 4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the files in section 2).
 5. `git merge lab/lab-work`
 6. `git status --short --untracked-files=all`: the price and SEC data should be gone from the list (about 35 entries left, all code, tests, docs and small csvs).
-7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 317: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 8 V4d, as on the lab PC).
+7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 318: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d, as on the lab PC).
 8. When done with the drive: `git remote remove lab`.
 
 The merged commit lands on whatever branch is checked out at home (normally `trading-t1-account`). Nothing is pushed; the user pushes when ready.
@@ -175,7 +178,7 @@ Copy from `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-t
 
 - Update `PROJECT_HANDOVER_CURRENT.md` once this is merged: section 10 (`.gitignore` gaps), section 14 item 7, section 15 "Risk" line and section 17 task 2 are now partly or fully done. Task 2's second half (copy `token_keeper.mjs` into `broker/` without secrets) is **not done**.
 - **V4 is built and tested in the lab** (V4a state, V4b-1 scoring, V4b-2 features, V4c planner, V4d daily dry run); see section 2. The universe is the S&P 500 (what the leagues trained on), buying limited to stocks the game is not known to refuse. The user later said in the lab: no need to work in small parts there, since the AI can run Python and the tests itself; the hard rules still apply.
-- **First things to do at home with V4:** (1) `python -m broker.daily_run --refresh-prices` (first real Yahoo refresh); (2) with the bridge running, `python -m broker.daily_run --refresh-prices --portfolio live --lib-dir D:\github\investopedia_simulator_api --save-snapshot game_snapshot.json` and check the account read (cash, positions, per-share purchase prices); (3) the full availability run (V3) or `--offered-only`; (4) only then think about V5.
+- **First things to do at home with V4:** (1) `python -m broker.daily_run --refresh-prices` (best after 16:15 New York time; earlier runs use the previous day); (2) with the bridge running, `python -m broker.daily_run --refresh-prices --portfolio live --lib-dir D:\github\investopedia_simulator_api --save-snapshot game_snapshot.json` and check the account read (cash, positions, per-share purchase prices); (3) the full availability run (V3) or `--offered-only`; (4) only then think about V5.
 - **V5 (placing orders) is not started and must not be without the user's explicit instruction.** It would read `orders\<date>\orders.csv`, need the bridge started with `--allow-orders`, and should begin with one tiny order the user watches; afterwards `--accept` the day.
 - Open questions for the user from the lab session: pushed the post-U2 work yet? full availability run finished? terms of service read?
 - Still open from section 17: task 1 (commit and push the post-U2 work; safe now that `.gitignore` is fixed), task 3 (cleanup), 3b, 4 (terms of service), 5 (full availability run), 6 (V4 order list) and beyond.

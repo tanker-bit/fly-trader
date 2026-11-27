@@ -16,6 +16,22 @@ from pathlib import Path
 import pandas as pd
 
 KEEP = ["Close", "Adj Close", "Volume", "Stock Splits"]
+CLOSED_AFTER = (16, 15)        # New York time after which today's bar counts as final (the close is 16:00; half days close earlier)
+
+
+def now_new_york():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York"))
+
+
+def drop_unfinished_bar(h: pd.DataFrame, now) -> pd.DataFrame:
+    """Yahoo returns today's bar while the market is still open (a partial volume and a moving 'close'). Drop it until CLOSED_AFTER.
+    Seen on 2026-11-27 at 12:47 New York time: AAPL's bar for that day had a quarter of a normal day's volume."""
+    today = pd.Timestamp(now.date())
+    if (now.hour, now.minute) < CLOSED_AFTER and len(h) and h.index[-1] >= today:
+        return h[h.index < today]
+    return h
 
 
 def yahoo_history(symbol: str) -> pd.DataFrame | None:
@@ -29,10 +45,11 @@ def yahoo_history(symbol: str) -> pd.DataFrame | None:
     return h[KEEP]
 
 
-def refresh_one(symbol: str, live_dir, fetch=yahoo_history, tries: int = 3, sleep=None) -> str:
-    """-> 'ok' | 'empty' | 'error'. The old live file stays when the download fails."""
+def refresh_one(symbol: str, live_dir, fetch=yahoo_history, tries: int = 3, sleep=None, now=None) -> str:
+    """-> 'ok' | 'empty' | 'error'. The old live file stays when the download fails. A bar for today is kept only after the close."""
     import time
     sleep = sleep or time.sleep
+    now = now or now_new_york()
     live_dir = Path(live_dir)
     live_dir.mkdir(parents=True, exist_ok=True)
     for n in range(tries):
@@ -42,6 +59,9 @@ def refresh_one(symbol: str, live_dir, fetch=yahoo_history, tries: int = 3, slee
                 return "empty"
             h = h[~h.index.duplicated(keep="last")].sort_index()
             h = h[h["Close"].notna() & (h["Close"] > 0)]               # Yahoo sometimes adds today's bar with no close yet
+            h = drop_unfinished_bar(h, now)
+            if h.empty:
+                return "empty"
             tmp = live_dir / f"{symbol}.pkl.tmp"
             h[KEEP].to_pickle(tmp)
             os.replace(tmp, live_dir / f"{symbol}.pkl")
@@ -51,11 +71,12 @@ def refresh_one(symbol: str, live_dir, fetch=yahoo_history, tries: int = 3, slee
     return "error"
 
 
-def refresh_prices(symbols, live_dir, fetch=yahoo_history, workers: int = 4, log=print) -> dict:
+def refresh_prices(symbols, live_dir, fetch=yahoo_history, workers: int = 4, log=print, now=None) -> dict:
     symbols = sorted(set(symbols))
+    now = now or now_new_york()
     out = {}
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-        for s, r in zip(symbols, ex.map(lambda s: refresh_one(s, live_dir, fetch), symbols)):
+        for s, r in zip(symbols, ex.map(lambda s: refresh_one(s, live_dir, fetch, now=now), symbols)):
             out[s] = r
     log(f"price refresh: {dict(Counter(out.values()))} for {len(symbols)} symbols into {live_dir}")
     return out

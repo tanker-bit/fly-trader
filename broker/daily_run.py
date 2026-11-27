@@ -139,6 +139,9 @@ def run_day(a, today=None, log=print) -> dict:
     if age > STALE_DAYS:
         notes.insert(0, f"WARNING: prices are from {asof.date()}, {age} days before today ({today}). Refresh them "
                         f"(--refresh-prices) before acting on this list.")
+    if feats.no_price_today:
+        notes.append(f"no price on {asof.date()} for {', '.join(feats.no_price_today)}: scored on the last known price "
+                     f"(halted, delisted or a data gap)")
     if feats.skipped_dates:
         notes.append(f"newer dates with too few prices were skipped: {', '.join(str(d.date()) for d in feats.skipped_dates)}")
     if avail["unknown"] and not a.offered_only:
@@ -157,7 +160,7 @@ def run_day(a, today=None, log=print) -> dict:
     save_state(out / "state_after.json", plan.state)
     meta = dict(asof=str(asof.date()), run_on=str(today), league=str(a.league), flies=[f.id for f in flies], mode=plan.mode,
                 orders=len(plan.orders), account=acc.source, before=plan.before, after=plan.after, coverage=feats.coverage,
-                dropped=feats.dropped, availability=avail, state_used=str(a.state) if state else None, notes=notes)
+                dropped=feats.dropped, no_price_today=feats.no_price_today, availability=avail, state_used=str(a.state) if state else None, notes=notes)
     (out / "run.json").write_text(json.dumps(meta, indent=1, default=str), encoding="utf-8")
     log("\n" + text)
     log(f"\nfiles in {out}. After placing these orders in the game, run:  python -m broker.daily_run --accept {asof.date()}")

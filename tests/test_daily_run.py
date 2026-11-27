@@ -72,6 +72,20 @@ def test_refresh_keeps_the_old_file_when_the_download_fails(tmp_path):
     assert pd.read_pickle(tmp_path / "AAA.pkl").index[-1] == bar.index[-2]
 
 
+def test_todays_bar_is_dropped_until_after_the_close(tmp_path):
+    """Seen on 2026-11-27 at 12:47 New York time: Yahoo already returned a partial bar for that day."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    ny = ZoneInfo("America/New_York")
+    h = hist(4, start="2026-11-24")                                # 24, 25, 26, 27 November
+    refresh_one("AAA", tmp_path, fetch=lambda s: h, now=datetime(2026, 11, 27, 12, 47, tzinfo=ny))
+    assert pd.read_pickle(tmp_path / "AAA.pkl").index[-1] == pd.Timestamp("2026-11-26")
+    refresh_one("AAA", tmp_path, fetch=lambda s: h, now=datetime(2026, 11, 27, 16, 30, tzinfo=ny))
+    assert pd.read_pickle(tmp_path / "AAA.pkl").index[-1] == pd.Timestamp("2026-11-27")
+    refresh_one("AAA", tmp_path, fetch=lambda s: h, now=datetime(2026, 11, 28, 9, 0, tzinfo=ny))     # next morning: yesterday is final
+    assert pd.read_pickle(tmp_path / "AAA.pkl").index[-1] == pd.Timestamp("2026-11-27")
+
+
 def test_overlay_replaces_and_extends_only_the_refreshed_columns(tmp_path):
     base = hist(5)
     old = pd.DataFrame({"AAA": base["Close"], "BBB": base["Close"] * 2})
