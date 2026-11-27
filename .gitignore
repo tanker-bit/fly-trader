@@ -1,16 +1,37 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
-data/
-*.npz
-*.parquet
-.env
 .ipynb_checkpoints/
+.pytest_cache/
+
+# Secrets and live logins (never commit)
+.env
+bridge_key.txt
+browser_profile/
+session_state.json
+access_token.json
+credentials.json
+auth.json
+probe_out.json
+
+# Bulk data (rebuild with the experiments.* scripts; see the handover, section 9)
+data/
+data_fundamentals/
+data_us/prices/
+data_us/sec/
+*.parquet
+*.npz
+*.pkl
+
+# Run outputs
 results/
 league_data/
-.env
-league_data/
 league_data_fundamentals/
-data_fundamentals/
-__pycache__/
 handover/
+/*.csv
+
+# Scratch files from audits
+/*_out.txt
+/env_names.txt
+/local_audit.txt
