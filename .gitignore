@@ -14,6 +14,11 @@ access_token.json
 credentials.json
 auth.json
 probe_out.json
+game_snapshot*.json
+
+# Live daily runs: the user's game account, order lists and policy memory (V4d)
+orders/
+data_live/
 
 # Bulk data (rebuild with the experiments.* scripts; see the handover, section 9)
 data/
