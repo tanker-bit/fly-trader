@@ -35,6 +35,8 @@ The copy's files are owned by the home Windows account, so git on the lab PC ref
 | 14 | `.gitignore` | added `orders/`, `data_live/`, `game_snapshot*.json` (the user's game account and order lists) | committed on `lab-work` |
 | 15 | `broker/trade_ui.py` | **new, V5**: places a day's orders on the Investopedia website in the bot's own visible Edge window (Playwright); submits by default | committed on `lab-work`; tested on a local stand-in page; **preview-only run on the real site: 24 of 26 previewed, 2 skipped by the price guard, 0 errors** |
 | 16 | `tests/test_trade_ui.py`, `tests/fake_trade_page.html` | **new**: 11 tests (5 need Playwright + Edge; skipped otherwise) | committed on `lab-work`, tested |
+| 17 | `broker/site_account.py`, `broker/autopilot.py`, `run_autopilot.cmd` | **new**: the fly reads its own account on the website and runs the whole trading day unattended | committed on `lab-work`, tested (see below) |
+| 18 | `tests/test_autopilot.py` | **new**: 11 tests (1 needs Playwright + Edge) | committed on `lab-work`, tested |
 
 The lab commits hold lab work only. The 7 modified and 26 untracked files from home were deliberately left out (still uncommitted in the copy). Use Route A below.
 
@@ -151,7 +153,7 @@ Run in `cmd` at home, from `D:\github\fly-trader\fly-trader` (replace `E:` with 
 4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the files in section 2).
 5. `git merge lab/lab-work`
 6. `git status --short --untracked-files=all`: the price and SEC data should be gone from the list (about 35 entries left, all code, tests, docs and small csvs).
-7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 329: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 11 V5, as on the lab PC; install Playwright first, `pip install playwright`, or 5 V5 tests are skipped).
+7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 340: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2 + 11 V4c + 9 V4d + 11 V5 + 11 autopilot, as on the lab PC; install Playwright first, `pip install playwright`, or 5 V5 tests are skipped).
 8. When done with the drive: `git remote remove lab`.
 
 The merged commit lands on whatever branch is checked out at home (normally `trading-t1-account`). Nothing is pushed; the user pushes when ready.
@@ -176,6 +178,10 @@ Copy from `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-t
 - `broker/trade_ui.py`
 - `tests/test_trade_ui.py`
 - `tests/fake_trade_page.html`
+- `broker/site_account.py`
+- `broker/autopilot.py`
+- `tests/test_autopilot.py`
+- `run_autopilot.cmd`
 
 (These are the only files the lab session changed. Every other entry in the lab copy's `git status` came from home unchanged.)
 
@@ -200,7 +206,27 @@ python -m broker.trade_ui --date 2026-11-25 --preview-only (fill in and preview 
 - Logs `orders\<date>\trade_log.csv` and screenshots in `orders\<date>\screens\`. If every order was submitted or skipped by a guard (no errors, at least one submitted), the day is accepted automatically (same as `broker.daily_run --accept`).
 - Page layout used (data-cy names, seen 2026-11-27): `symbol-search-field`, `symbol-info-form`, `action-select` (Buy / Sell / Short / Buy To Cover), `quantity-input`, `order-select`, `duration-select`, `preview-button`, `preview-order-dialog` (`preview-order-type`, `preview-stock-symbol`, `preview-stock-quantity`, `preview-list-item`), `change-order-button`, `submit-order-button`, `buying-power`, `cash`. Suggestions are `[role=option]`. A late "allow notifications" pop-up (`.pushly-prompt-btn-dismiss`) once swallowed the Preview click; the bot now dismisses it and retries once.
 - **Lab results on the real site (2026-11-27, account $100,000 cash, no positions):** preview-only run of the 2026-11-25 plan: 24 of 26 orders filled and previewed correctly, BE (+6.2%) and ON (+6.3%) skipped by the price guard, 0 errors; every symbol, including VTI/RSP/QQQ, exists in the game. **The SUBMIT path has only been tested on the local stand-in page**; what the real site shows after SUBMIT ORDER is not yet known (the bot records whatever message appears and treats error words as a failure).
-- Not built yet: reading the holdings table from the Portfolio page (the account had no positions to map). Until then `broker.daily_run` reads the account from a snapshot file or the bridge. It would read `orders\<date>\orders.csv`, need the bridge started with `--allow-orders`, and should begin with one tiny order the user watches; afterwards `--accept` the day.
+- The user then said: "were not ordering just yet we have to get our fly to do the order not you". So the AI never submits orders; the fly's autopilot does, unattended (below).
+
+### The fly's autopilot: `broker/autopilot.py`, `broker/site_account.py`, `run_autopilot.cmd`
+
+```
+python -m broker.autopilot                   (one full trading day, unattended: read account, refresh, score, plan, trade, accept)
+python -m broker.autopilot --preview-only    (same, but stops at each order's preview)
+run_autopilot.cmd                            (the same from any folder, for a scheduled task; finds ..\.venv-lab or ..\.venv)
+```
+1. `broker/site_account.py` reads the account from the website: Portfolio page (`account-value-text`, `buying-power-text`, `cash-text`, the table in `holdings-table` with Symbol, Description, Current Price, Today's Change, Purchase Price, QTY, Total Value, Total Gain/Loss, Trade Actions) and Order Status page (`/simulator/trade/order-status`: `open-trade-table`, `failed-trade-table`). Cash + holdings must equal the account value within 1% (or $50), else the run stops. Headers are checked by name.
+2. Open orders on the website -> no trading that day (they would be doubled). Failed trades are logged.
+3. Prices refreshed (`--no-refresh` to skip); the account read from the website is the plan's portfolio (`orders\web_account.json`).
+4. No trading on stale prices (over 4 days, `--allow-stale` to override) or on a price date already traded (a `trade_log.csv` with a submitted row).
+5. Orders through `broker.trade_ui` (all its checks); the day is accepted only when nothing went wrong. A quiet day (no orders) is accepted too, so the policy memory moves forward.
+6. `orders\STOP` stops it before anything happens or between orders. Everything is appended to `orders\autopilot.log`.
+
+**Scheduling (not set up in the lab):** one run per trading day after 16:15 New York time, e.g. a Windows scheduled task at home (adjust the time to the PC's time zone; 16:45 New York = 16:45 Eastern):
+```
+schtasks /Create /TN "STONKFLY autopilot" /TR "D:\github\fly-trader\fly-trader\run_autopilot.cmd" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 16:45
+```
+The PC must be on and the bot's Edge profile signed in (`python -m broker.trade_ui --login` once). Market holidays: the refresh simply finds no new bar, the price date was already traded, so nothing happens. Orders placed after the close are market orders for the next open; the next run sees them under Open Trades and waits. It would read `orders\<date>\orders.csv`, need the bridge started with `--allow-orders`, and should begin with one tiny order the user watches; afterwards `--accept` the day.
 - Open questions for the user from the lab session: pushed the post-U2 work yet? full availability run finished? terms of service read?
 - Still open from section 17: task 1 (commit and push the post-U2 work; safe now that `.gitignore` is fixed), task 3 (cleanup), 3b, 4 (terms of service), 5 (full availability run), 6 (V4 order list) and beyond.
 - The user commits and pushes. Follow the working rules in `PROJECT_HANDOVER_CURRENT.md` section 19.
