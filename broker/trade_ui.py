@@ -357,6 +357,8 @@ def read_orders(path: Path) -> list:
 
 
 OFFSCREEN_ARGS = ["--window-position=-2600,0"]   # a normal visible window, just placed off the screen (watch it on the dashboard)
+ONSCREEN_ARGS = ["--window-position=40,40"]      # always put it back on the screen: Edge remembers the last position in the profile,
+                                                 # so after one --offscreen run it would otherwise reopen off the screen (seen 2026-11-27)
 
 
 def browser(profile: Path, headless=False, offscreen=False):
@@ -365,7 +367,7 @@ def browser(profile: Path, headless=False, offscreen=False):
     from playwright.sync_api import sync_playwright
     pw = sync_playwright().start()
     ctx = pw.chromium.launch_persistent_context(str(profile), channel="msedge", headless=headless, viewport={"width": 1280, "height": 900},
-                                                args=OFFSCREEN_ARGS if offscreen else [])
+                                                args=OFFSCREEN_ARGS if offscreen else ONSCREEN_ARGS)
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     return pw, ctx, page
 
