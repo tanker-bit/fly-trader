@@ -225,13 +225,23 @@ def test_the_wall_monitor_floats_above_the_desk_and_faces_the_camera():
     assert len(vd.build_wall_monitor().solid) < len(vd.build_monitor().solid)          # no stand
 
 
-def test_the_flat_website_panel_keeps_the_picture_shape_and_fits_under_the_hud():
-    for aspect in (16 / 9, 16 / 10, 21 / 9):
+def test_the_website_panel_sits_beside_the_3d_view_never_over_it():
+    for aspect in (16 / 9, 16 / 10, 21 / 9, 4 / 3):
         tl, tr, br, bl = vd.web_overlay_quad(aspect)
-        w, h = tr[0] - tl[0], tl[1] - bl[1]
-        assert tr[0] <= 1.0 and bl[1] >= -1.0 and tl[1] < 1.0               # inside the window, under the top bar
-        px_w, px_h = w * aspect, h                                          # NDC -> same-scale units
-        assert abs(px_w / px_h - vd.WEB_W / vd.WEB_H) < 0.02 or bl[1] + 1.0 < 0.05     # picture shape kept unless the height caps it
+        assert tl[0] >= -1.0 + 2.0 * vd.WEB_SPLIT                          # left edge right of the 3D view's share of the window
+        assert tr[0] <= 1.0 and bl[1] >= -1.0 and tl[1] < 1.0              # inside the window, under the top bar
+        w, h = (tr[0] - tl[0]) * aspect, tl[1] - bl[1]
+        assert abs(w / h - vd.WEB_W / vd.WEB_H) < 0.02                     # the picture keeps its shape
+    assert vd.scene_width(1920, True) == round(1920 * vd.WEB_SPLIT) and vd.scene_width(1920, False) == 1920
+
+
+def test_split_screen_framing_is_tighter_but_still_a_valid_view():
+    cam = vd.Camera(16 / 9)
+    wide = cam.fov
+    cam.set_aspect(0.58 * 16 / 9, zoom=vd.WEB_SPLIT_ZOOM)
+    tight = cam.fov
+    cam.set_aspect(0.58 * 16 / 9)
+    assert 0 < tight < cam.fov and wide <= cam.fov and tight < 90
 
 
 def test_mirror_writes_the_picture_atomically_and_throttles(tmp_path):

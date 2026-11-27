@@ -263,15 +263,17 @@ class Camera:
         self.view = look_at(self.eye, self.target)
         self.set_aspect(aspect)
 
-    def set_aspect(self, aspect: float):
+    def set_aspect(self, aspect: float, zoom: float = 1.0):
         """Any window shape: the 16:9 framing is the minimum horizontal view, so narrower windows (16:10, 4:3) widen the
         vertical fov instead of cropping the desk; wider windows (21:9) keep the vertical fov and show more city."""
-        self.aspect = float(aspect)
+        self.aspect, self.zoom = float(aspect), float(zoom)
         ref = 16.0 / 9.0
         if self.aspect >= ref:
             self.fov = self.base_fov
         else:
             self.fov = math.degrees(2.0 * math.atan(math.tan(math.radians(self.base_fov) / 2.0) * ref / self.aspect))
+        if self.zoom != 1.0:                                     # split screen: tighter framing so the desk fills its half
+            self.fov = math.degrees(2.0 * math.atan(math.tan(math.radians(self.fov) / 2.0) / self.zoom))
         self.proj = perspective(self.fov, self.aspect, 0.1, 400.0)
 
     @property
@@ -3211,18 +3213,29 @@ def build_wall_monitor() -> Monitor:
     return Monitor(solid=body, led=m.led, screen=m.screen, screen_quad=m.screen_quad, boxes=[((0.0, 0.0, 0.0), MON_BODY)])
 
 
-WEB_OVL_W = 1.18                                  # width of the flat website panel in clip space (of 2.0)
-WEB_OVL_MARGIN = 0.02
+WEB_SPLIT = 0.58                                  # with the website panel on: the 3D scene gets this share of the window width
+WEB_OVL_MARGIN = 0.02                             # and the panel gets the rest, so it never covers a monitor
+WEB_SPLIT_ZOOM = 1.3                              # the narrower 3D view is framed tighter so the desk still fills it
 
 
-def web_overlay_quad(aspect: float):
-    """TL, TR, BR, BL of the flat website panel (W key): right side of the window, under the HUD bar, picture aspect kept."""
-    w = WEB_OVL_W
-    h = w * (WEB_H / WEB_W) * float(aspect)
+def scene_width(win_w: int, panel_on: bool, split: float = WEB_SPLIT) -> int:
+    return max(int(round(win_w * split)), 1) if panel_on else int(win_w)
+
+
+def web_overlay_quad(aspect: float, split: float = WEB_SPLIT):
+    """TL, TR, BR, BL of the website panel (W key): the window's right part, next to the 3D view (split screen), under the HUD bar,
+    as wide as that part allows with the picture's shape kept, centred vertically."""
     hud_h = min(2.0 * float(aspect) * HUD_H / HUD_W, 0.6)
-    h = min(h, 2.0 - hud_h - 2 * WEB_OVL_MARGIN)
-    x1, y1 = 1.0 - WEB_OVL_MARGIN, 1.0 - hud_h - WEB_OVL_MARGIN
-    return [(x1 - w, y1, 0.0), (x1, y1, 0.0), (x1, y1 - h, 0.0), (x1 - w, y1 - h, 0.0)]
+    x0, x1 = -1.0 + 2.0 * split + WEB_OVL_MARGIN, 1.0 - WEB_OVL_MARGIN
+    top, bottom = 1.0 - hud_h - WEB_OVL_MARGIN, -1.0 + WEB_OVL_MARGIN
+    w = x1 - x0
+    h = w * (WEB_H / WEB_W) * float(aspect)
+    if h > top - bottom:                                       # a tall-narrow window: fit the height instead
+        h = top - bottom
+        w = h / ((WEB_H / WEB_W) * float(aspect))
+        x0 = x1 - w
+    y1 = top - max((top - bottom - h) / 2.0, 0.0)
+    return [(x0, y1, 0.0), (x0 + w, y1, 0.0), (x0 + w, y1 - h, 0.0), (x0, y1 - h, 0.0)]
 
 
 class WebContent:
@@ -3601,6 +3614,13 @@ class VisualDashboard:
                 self._drop_bloom(e)
                 use_bloom = False
         self.ctx.clear(*SKY_TOP, 1.0)
+        panel = self.web_panel is not None and self.web_panel_on
+        sw = scene_width(self.win_size[0], panel)                 # split screen: the website panel never covers the scene
+        scene_vp = (0, 0, sw, self.win_size[1])
+        zoom = WEB_SPLIT_ZOOM if panel else 1.0
+        if abs(self.camera.aspect - sw / self.win_size[1]) > 1e-6 or getattr(self.camera, "zoom", 1.0) != zoom:
+            self.camera.set_aspect(sw / self.win_size[1], zoom)   # narrower view, framed tighter; the whole desk stays in
+        self.ctx.viewport = scene_vp
         self.scene.begin_frame(self.prog, t)
         vm = self.vm
         self.skyline.draw(self.scene, t)
@@ -3627,11 +3647,13 @@ class VisualDashboard:
                 self._drop_bloom(e)
         if self.web_screen is not None:                      # after the glow pass: the white web page must stay sharp
             import moderngl
+            self.ctx.viewport = scene_vp
             if use_bloom:
                 self.ctx.disable(moderngl.DEPTH_TEST)        # the window's depth buffer is not this frame's (the scene went to the bloom
             self.web_monitor.draw(self.scene, t, vm)         # target); the wall screen floats above the desk, nothing hides it
             self.web_screen.draw(self.scene, t, vm)
             self.ctx.enable(moderngl.DEPTH_TEST)
+        self.ctx.viewport = (0, 0, *self.win_size)           # overlays use the whole window
         self.hud.draw(self.win_size[0] / self.win_size[1], vm)      # screen-space overlays, over everything, never bloomed
         self.log_panel.draw(self.win_size[0] / self.win_size[1], vm)
         if self.money_on:
