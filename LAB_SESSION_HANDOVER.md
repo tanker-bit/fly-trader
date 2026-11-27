@@ -245,7 +245,7 @@ python experiments\visual_dashboard.py --trade-replay    (replay the last run; a
 - **Headless does not work on this site:** on 2026-11-27 a headless Edge got Cloudflare's "Just a moment..." page instead of the Trade tab. Not worked around. Instead `--offscreen` (trade_ui and autopilot) opens the normal window off the screen, so the 4th monitor is where you watch it. Checked on the lab PC: a 3-order preview-only run with `--offscreen` previewed JBL and CDNS, skipped BE (price check), and the 4th monitor's picture showed the CDNS order form under `INVESTOPEDIA LIVE 13:50:42`.
 ```
 python experiments\visual_dashboard.py --trade-feed --web-overlay   (window 1: fullscreen dashboard, 4 monitors, W = website panel)
-python -m broker.autopilot --offscreen                              (window 2: the fly's day; its browser is off screen)
+python -m broker.autopilot                                          (window 2: the fly's day; its Edge window stays visible on the PC, and the dashboard shows the same page; add --offscreen to hide it)
 ```
 - Tests: 6 more in `tests/test_trade_feed.py` (16 in all). Full suite on the lab PC: 356 passed.
 
