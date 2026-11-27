@@ -23,6 +23,8 @@ The copy's files are owned by the home Windows account, so git on the lab PC ref
 | 2 | `LAB_SESSION_HANDOVER.md` | this file | committed on `lab-work` |
 | 3 | `accounts/policy_state.py` | **new, V4a**: saves and restores `HoldPolicy`'s memory between daily runs (details below) | committed on `lab-work`, tested |
 | 4 | `tests/test_policy_state.py` | **new**: 10 tests for V4a | committed on `lab-work`, tested |
+| 5 | `tournament/live.py` | **new, V4b-1**: pick, load and score a league's trained flies on live feature rows (details below) | committed on `lab-work`, tested |
+| 6 | `tests/test_live_scores.py` | **new**: 6 tests for V4b-1 (2 use the real `league_v8`, connectome csvs and hybrid panel; skipped where absent) | committed on `lab-work`, tested |
 
 The lab commits hold lab work only. The 7 modified and 26 untracked files from home were deliberately left out (still uncommitted in the copy). Use Route A below.
 
@@ -49,6 +51,15 @@ What it does:
 Key tests: a policy rebuilt from the file every morning makes **exactly** the same trades as one that never stops, both with the full price history and with a 100-day rolling window. Others cover cooldowns across frames, the rebalance rhythm, file safety, and the ticker `NA`.
 
 Known limitation (found in review; the tests do not hit it): dates **before** the price frame's first day are counted in weekdays, not exchange trading days, so each market holiday in that stretch makes a held-day or cooldown count one day off. The same happens if the saved date is missing from the frame because of a data gap (it maps to the next trading day). Keep the daily price frame longer than `lt_days` (252) plus a margin so normal holdings stay inside it, or pass an exchange holiday list to `np.busday_count` / `np.busday_offset` (`holidays=`) in `_pos` / `_date_at` if exact counts matter.
+
+### V4b-1 details: `tournament/live.py`
+
+- `pick_flies(store, which)`: `"kept"` = living flies scored (not silent) in the league's latest round with weights on disk. For `league_v8` that is exactly the 10 KEPT in round 18 (`a0180 a0182 a0184 a0185 a0187 a0191 a0192 a0193 a0195 a0196`); never-scored newborn children with inherited weights (`a0204`-`a0208`) are left out. `"best"` = top selection score (`a0192`). Or a list of ids.
+- `load_flies(store, cfg, recs)`: rebuilds each circuit (connectome csvs in `data/`, paths relative to the project root) and loads the trained weights; refuses missing or wrongly shaped weights.
+- `score_rows(flies, X, feats)`: one score column per fly plus `committee` (mean of per-fly z-scores, as the league reports it). Refuses missing columns, gaps, duplicate tickers and values outside [-1, 1] (features must already be cross-sectional ranks). Column and row order of X do not matter.
+- Checked on the lab PC: scoring a round-18 validation day through this module reproduces the scores the league saved **exactly** (difference 0.0), and repeat runs are identical. Speed: about 1.7 s per fly for about 480 stocks, so the 10-fly committee takes about 17 s.
+- No training, no labels; the holdout is not touched (the kept flies were trained through 2023-01-12; the panel's holdout starts 2024-08-13).
+- Not done yet (V4b-2): building today's feature rows (13 ranked price features, 11 ranked point-in-time fundamentals, `fund_known`) for the chosen universe from fresh prices and SEC data, matching how `panel_hybrid.parquet` was built.
 
 Design note for V4c/V4d: save the new state only after the day's orders have really been placed (V5). A V4 dry run must not overwrite the real state file, or the next day would think it already rebalanced.
 
@@ -77,17 +88,17 @@ The work is committed on `lab-work`, so use Route A. Route B is a fallback.
 
 ### Route A: merge the `lab-work` branch (preferred)
 
-The lab commits touch only the four files in section 2: `.gitignore` (unmodified at home) and three files that do not exist at home, so the home clone's own uncommitted and untracked files are not in the way and stay as they are.
+The lab commits touch only the files in section 2: `.gitignore` (unmodified at home) and new files that do not exist at home, so the home clone's own uncommitted and untracked files are not in the way and stay as they are.
 
 Run in `cmd` at home, from `D:\github\fly-trader\fly-trader` (replace `E:` with the drive's letter):
 
 1. Check the start state: `git status` and `git log --oneline -1`. Expect branch `trading-t1-account` at `cec8e1a`, with `.gitignore` not listed as modified. If the home branch has new commits, the merge below is a normal merge rather than a fast-forward; review it before continuing. If `.gitignore` was edited at home, commit or set that edit aside first.
 2. `git remote add lab E:/github-copy/fly-trader/fly-trader`
 3. `git fetch lab lab-work`
-4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the four in section 2).
+4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the files in section 2).
 5. `git merge lab/lab-work`
 6. `git status --short --untracked-files=all`: the price and SEC data should be gone from the list (about 35 entries left, all code, tests, docs and small csvs).
-7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 284 with the 10 new V4a tests, as on the lab PC).
+7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 290: 274 + 10 V4a + 6 V4b-1, as on the lab PC).
 8. When done with the drive: `git remote remove lab`.
 
 The merged commit lands on whatever branch is checked out at home (normally `trading-t1-account`). Nothing is pushed; the user pushes when ready.
@@ -99,13 +110,15 @@ Copy from `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-t
 - `LAB_SESSION_HANDOVER.md`
 - `accounts/policy_state.py`
 - `tests/test_policy_state.py`
+- `tournament/live.py`
+- `tests/test_live_scores.py`
 
 (These are the only files the lab session changed. Every other entry in the lab copy's `git status` came from home unchanged.)
 
 ## 4. Notes for the AI at home
 
 - Update `PROJECT_HANDOVER_CURRENT.md` once this is merged: section 10 (`.gitignore` gaps), section 14 item 7, section 15 "Risk" line and section 17 task 2 are now partly or fully done. Task 2's second half (copy `token_keeper.mjs` into `broker/` without secrets) is **not done**.
-- V4 plan agreed in the lab (each part waits for the user's "go"): **V4a** saved policy state (done, tested on the lab PC); **V4b** today's fly scores from a league folder (not started; open decision: score only S&P 500 stocks the game offers, as the leagues were trained on, or all offered US stocks; the lab AI recommended S&P 500 only); **V4c** order planner: shadow `Account` seeded with the game's real holdings and cash (pass cash 100,000 explicitly), one `HoldPolicy` day with MIX, diff -> order list with reasons; **V4d** `daily_run` command: read-only bridge reads, availability filter, writes `orders/YYYY-MM-DD.csv` and a summary. No ordering code (that is V5).
+- V4 plan agreed in the lab (each part waits for the user's "go"): **V4a** saved policy state (done, tested on the lab PC); **V4b** today's fly scores from a league folder (V4b-1 done and tested: load and score flies; V4b-2 not started: build today's feature rows; open decision: score only S&P 500 stocks the game offers, as the leagues were trained on, or all offered US stocks; the lab AI recommended S&P 500 only); **V4c** order planner: shadow `Account` seeded with the game's real holdings and cash (pass cash 100,000 explicitly), one `HoldPolicy` day with MIX, diff -> order list with reasons; **V4d** `daily_run` command: read-only bridge reads, availability filter, writes `orders/YYYY-MM-DD.csv` and a summary. No ordering code (that is V5).
 - Open questions for the user from the lab session: pushed the post-U2 work yet? full availability run finished? terms of service read?
 - Still open from section 17: task 1 (commit and push the post-U2 work; safe now that `.gitignore` is fixed), task 3 (cleanup), 3b, 4 (terms of service), 5 (full availability run), 6 (V4 order list) and beyond.
 - The user commits and pushes. Follow the working rules in `PROJECT_HANDOVER_CURRENT.md` section 19.
