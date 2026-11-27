@@ -25,6 +25,8 @@ The copy's files are owned by the home Windows account, so git on the lab PC ref
 | 4 | `tests/test_policy_state.py` | **new**: 10 tests for V4a | committed on `lab-work`, tested |
 | 5 | `tournament/live.py` | **new, V4b-1**: pick, load and score a league's trained flies on live feature rows (details below) | committed on `lab-work`, tested |
 | 6 | `tests/test_live_scores.py` | **new**: 6 tests for V4b-1 (2 use the real `league_v8`, connectome csvs and hybrid panel; skipped where absent) | committed on `lab-work`, tested |
+| 7 | `tournament/live_features.py` | **new, V4b-2**: today's feature rows from the local caches, built exactly like `panel_hybrid.parquet` (details below) | committed on `lab-work`, tested |
+| 8 | `tests/test_live_features.py` | **new**: 8 tests for V4b-2 (3 use the real `data_fundamentals` caches; skipped where absent) | committed on `lab-work`, tested |
 
 The lab commits hold lab work only. The 7 modified and 26 untracked files from home were deliberately left out (still uncommitted in the copy). Use Route A below.
 
@@ -59,7 +61,17 @@ Known limitation (found in review; the tests do not hit it): dates **before** th
 - `score_rows(flies, X, feats)`: one score column per fly plus `committee` (mean of per-fly z-scores, as the league reports it). Refuses missing columns, gaps, duplicate tickers and values outside [-1, 1] (features must already be cross-sectional ranks). Column and row order of X do not matter.
 - Checked on the lab PC: scoring a round-18 validation day through this module reproduces the scores the league saved **exactly** (difference 0.0), and repeat runs are identical. Speed: about 1.7 s per fly for about 480 stocks, so the 10-fly committee takes about 17 s.
 - No training, no labels; the holdout is not touched (the kept flies were trained through 2023-01-12; the panel's holdout starts 2024-08-13).
-- Not done yet (V4b-2): building today's feature rows (13 ranked price features, 11 ranked point-in-time fundamentals, `fund_known`) for the chosen universe from fresh prices and SEC data, matching how `panel_hybrid.parquet` was built.
+
+### V4b-2 details: `tournament/live_features.py`
+
+- `load_inputs("data_fundamentals")`: the same local caches the hybrid panel was built from (prices + usable extras, `universe/intervals.csv` membership, CIKs). No downloads.
+- `feature_rows(inp, asof=None)`: the 25 league features for every S&P 500 member on `asof`, through the **same code** as the panel (`experiments.build_dataset_price.build_price_panel` + `raw_fundamentals`); nothing re-implemented. Ranking is among all members of the day, as in training; filtering to game-offered stocks must come **after** (V4c).
+- Two findings that matter for exactness:
+  1. **Splits:** the fundamentals must be aligned on dates running to the **end of the price cache**, not cut at `asof`. Yahoo's `Close` is adjusted for every split up to the download, and `env.fundamentals.split_after` only undoes splits inside the dates it is given. Cutting at `asof` changed `earnings_yield`, `book_to_price` and `fcf_yield` for a 2023 day (max rank error 1.7). Fixed and tested.
+  2. **Partly refreshed price cache:** in this copy, prices after 2026-11-06 exist for only 103 of 606 tickers (44 on 2026-11-16). The "last date" would have given 0 rows, and dates 1-3 days after a stock's last price would silently reuse forward-filled stale prices. Now the default `asof` is the newest date on which at least 95% of the members have a real price (here 2026-11-06, 6 newer dates skipped and reported), and an explicitly requested day below 95% is refused. Single missing quotes are kept (as the panel does) but listed in `no_price_today`. **The home cache is probably in the same state**: refresh prices before a live run (V4d).
+- Checked: rebuilt rows equal the stored panel **exactly** on 2023-04-14 and on the panel's last day (2026-11-06), the result does not depend on the window length, and rebuilt rows -> `tournament.live` -> fly `a0192` reproduce its saved round-18 scores exactly.
+- Live demo on 2026-11-06 (lab PC): 500 of 503 members got rows (`FDXF`, `HONA`, `VYLR` dropped: under 260 days of history), about 9 s to build; the 10-fly committee scored them in about 17 s; mean correlation between the flies' scores 0.46. (The committee's top names are not shown here on purpose: there is no demonstrated edge.)
+- Not done: refreshing the caches (prices from Yahoo, S&P 500 membership from Wikipedia, SEC filings) is part of V4d.
 
 Design note for V4c/V4d: save the new state only after the day's orders have really been placed (V5). A V4 dry run must not overwrite the real state file, or the next day would think it already rebalanced.
 
@@ -98,7 +110,7 @@ Run in `cmd` at home, from `D:\github\fly-trader\fly-trader` (replace `E:` with 
 4. `git log --oneline cec8e1a..lab/lab-work` to see the lab commit(s), and `git diff --stat HEAD lab/lab-work` to see the files (expect only the files in section 2).
 5. `git merge lab/lab-work`
 6. `git status --short --untracked-files=all`: the price and SEC data should be gone from the list (about 35 entries left, all code, tests, docs and small csvs).
-7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 290: 274 + 10 V4a + 6 V4b-1, as on the lab PC).
+7. `python -m pytest -q tests` from the project root (274 passed before the lab session; expect 298: 274 + 10 V4a + 6 V4b-1 + 8 V4b-2, as on the lab PC).
 8. When done with the drive: `git remote remove lab`.
 
 The merged commit lands on whatever branch is checked out at home (normally `trading-t1-account`). Nothing is pushed; the user pushes when ready.
@@ -112,13 +124,15 @@ Copy from `E:\github-copy\fly-trader\fly-trader\` to `D:\github\fly-trader\fly-t
 - `tests/test_policy_state.py`
 - `tournament/live.py`
 - `tests/test_live_scores.py`
+- `tournament/live_features.py`
+- `tests/test_live_features.py`
 
 (These are the only files the lab session changed. Every other entry in the lab copy's `git status` came from home unchanged.)
 
 ## 4. Notes for the AI at home
 
 - Update `PROJECT_HANDOVER_CURRENT.md` once this is merged: section 10 (`.gitignore` gaps), section 14 item 7, section 15 "Risk" line and section 17 task 2 are now partly or fully done. Task 2's second half (copy `token_keeper.mjs` into `broker/` without secrets) is **not done**.
-- V4 plan agreed in the lab (each part waits for the user's "go"): **V4a** saved policy state (done, tested on the lab PC); **V4b** today's fly scores from a league folder (V4b-1 done and tested: load and score flies; V4b-2 not started: build today's feature rows; open decision: score only S&P 500 stocks the game offers, as the leagues were trained on, or all offered US stocks; the lab AI recommended S&P 500 only); **V4c** order planner: shadow `Account` seeded with the game's real holdings and cash (pass cash 100,000 explicitly), one `HoldPolicy` day with MIX, diff -> order list with reasons; **V4d** `daily_run` command: read-only bridge reads, availability filter, writes `orders/YYYY-MM-DD.csv` and a summary. No ordering code (that is V5).
+- V4 plan agreed in the lab (each part waits for the user's "go"): **V4a** saved policy state (done, tested on the lab PC); **V4b** today's fly scores from a league folder (V4b-1 done and tested: load and score flies; V4b-2 done and tested: build today's feature rows from the local caches; open decision: score only S&P 500 stocks the game offers, as the leagues were trained on, or all offered US stocks; the lab AI recommended S&P 500 only); **V4c** order planner: shadow `Account` seeded with the game's real holdings and cash (pass cash 100,000 explicitly), one `HoldPolicy` day with MIX, diff -> order list with reasons; **V4d** `daily_run` command: read-only bridge reads, availability filter, writes `orders/YYYY-MM-DD.csv` and a summary. No ordering code (that is V5).
 - Open questions for the user from the lab session: pushed the post-U2 work yet? full availability run finished? terms of service read?
 - Still open from section 17: task 1 (commit and push the post-U2 work; safe now that `.gitignore` is fixed), task 3 (cleanup), 3b, 4 (terms of service), 5 (full availability run), 6 (V4 order list) and beyond.
 - The user commits and pushes. Follow the working rules in `PROJECT_HANDOVER_CURRENT.md` section 19.
