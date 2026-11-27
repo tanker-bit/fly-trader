@@ -1,6 +1,6 @@
 # Lab session handover (2026-11-27)
 
-For the AI assistant and the user at home. Read `PROJECT_HANDOVER_CURRENT.md` first for the project itself; this file covers what was done on the lab PC, the state it was left in, and how to bring it into the home clone.
+**Start with `HOME_START.md`** (steps for home and a message for your AI assistant; the lab chat is not available at home). For the AI assistant and the user at home. Read `PROJECT_HANDOVER_CURRENT.md` first for the project itself; this file covers what was done on the lab PC, the state it was left in, and how to bring it into the home clone.
 
 ## 1. Summary
 
